@@ -26,7 +26,7 @@ load_dotenv(BASE_DIR / ".env")
 app = FastAPI(
     title="SupplyPilot",
     description="Multi-agent supply-chain decision intelligence",
-    version="1.2.0",
+    version="1.2.1",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 logger = logging.getLogger("supplypilot")
