@@ -25,7 +25,42 @@ class AgentRuntimeError(RuntimeError):
         self.timeline = timeline or []
 
 
-PROMPT_OUTPUT = "Return only valid JSON. Do not use markdown fences. Do not invent facts, values, suppliers, SKUs, dates, or data sources. Distinguish a measured fact from an inference."
+PROMPT_OUTPUT = (
+    "Return only the JSON object required by the response schema. Keep every text field concise. "
+    "Use no more than 3 items in each list and no more than 4 preferred suppliers or 5 audit checks. "
+    "Do not invent facts, values, suppliers, SKUs, dates, or data sources. Distinguish measured facts from inferences."
+)
+
+
+def _response_schema(shape: dict) -> dict:
+    """Convert compact output-shape declarations into a strict JSON schema."""
+    def object_schema(fields: dict) -> dict:
+        properties = {key: field_schema(value) for key, value in fields.items()}
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        }
+
+    def field_schema(example: Any) -> dict:
+        if isinstance(example, bool):
+            return {"type": "boolean"}
+        if isinstance(example, str):
+            if "|" in example:
+                return {"type": "string", "enum": [part.strip() for part in example.split("|")]}
+            return {"type": "string"}
+        if isinstance(example, list):
+            if example and isinstance(example[0], dict):
+                item = object_schema(example[0])
+            else:
+                item = {"type": "string"}
+            return {"type": "array", "items": item, "maxItems": 4}
+        if isinstance(example, dict):
+            return object_schema(example)
+        return {"type": "string"}
+
+    return object_schema(shape)
 
 
 def _parse_json(text: str, agent_name: str) -> dict:
@@ -114,42 +149,56 @@ def run_investigation(
         report_progress(name, "running")
         prompt = f"""You are the {name} in SupplyPilot, a multi-agent supply-chain decision-support system.
 ROLE: {role}
-INCIDENT / BUSINESS QUESTION: {title}
+BUSINESS QUESTION: {title}
 ASSIGNED EVIDENCE AND TOOL OUTPUTS:
 {json.dumps(evidence, ensure_ascii=False, default=str)}
 
-Analyze only your assigned responsibility. Use concrete values from the evidence. If the evidence is insufficient, say so. Do not create purchase orders or claim actions were executed. Another agent will receive your findings, so make assumptions and caveats explicit.
-REQUIRED JSON SHAPE (replace placeholders with evidence-based values):
-{json.dumps(output_shape)}
-The example values describe the required data types; do not return the placeholder words literally. Use JSON arrays for list fields and true/false JSON booleans for boolean fields. Use only the keys shown.
+Analyze only your assigned responsibility. Use concrete values from the evidence. If evidence is insufficient, say so. Do not create purchase orders or claim actions were executed. Keep the response concise so it can be checked and passed to another agent.
 {PROMPT_OUTPUT}
 """
+        schema = _response_schema(output_shape)
         last_error = None
         for attempt in range(3):
             started = time.perf_counter()
             try:
                 with lock:
                     counters["gemini_calls"] += 1
+                request_prompt = prompt
+                if attempt > 0:
+                    request_prompt += "\nThe previous output could not be parsed. Return a shorter response with at most 2 list items per field. Follow the supplied JSON schema exactly; do not add commentary."
                 response = client.models.generate_content(
                     model=model,
-                    contents=prompt,
+                    contents=request_prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        temperature=0.2,
-                        max_output_tokens=1800,
+                        response_json_schema=schema,
+                        temperature=0.1 if attempt == 0 else 0.0,
+                        max_output_tokens=1200,
                     ),
                 )
-                result = _normalize_output(_parse_json(response.text or "", name), output_shape)
+                parsed = getattr(response, "parsed", None)
+                if isinstance(parsed, dict):
+                    value = parsed
+                else:
+                    value = _parse_json(getattr(response, "text", None) or "", name)
+                result = _normalize_output(value, output_shape)
                 timeline.append({"type": "agent", "name": name, "duration_ms": round((time.perf_counter() - started) * 1000), "status": "completed", "attempt": attempt + 1})
                 report_progress(name, "completed")
                 return result
-            except Exception as exc:  # preserve the provider error after transient retries
+            except Exception as exc:
                 last_error = exc
                 message = str(exc).lower()
-                transient = any(code in message for code in ("503", "unavailable", "429", "resource_exhausted", "500", "internal server error", "deadline"))
-                if not transient or attempt == 2:
+                malformed_output = isinstance(exc, AgentRuntimeError) and any(
+                    marker in message for marker in ("invalid json", "empty response", "must be a json object")
+                )
+                transient = any(code in message for code in ("503", "unavailable", "429", "resource_exhausted", "500", "internal server error", "deadline", "timeout"))
+                # Retry malformed model output once with a shorter repair instruction;
+                # retry transient provider failures with backoff. Do not retry auth or quota errors endlessly.
+                should_retry = (malformed_output and attempt == 0) or (transient and attempt < 2)
+                if not should_retry:
                     break
-                time.sleep(1.25 * (attempt + 1))
+                if transient:
+                    time.sleep(1.25 * (attempt + 1))
         timeline.append({"type": "agent", "name": name, "duration_ms": 0, "status": "failed"})
         report_progress(name, "failed")
         raise AgentRuntimeError(f"{name} failed after {attempt + 1} attempt(s): {last_error}", metrics_snapshot(), list(timeline))
@@ -188,9 +237,19 @@ The example values describe the required data types; do not return the placehold
             pool.submit(ask_agent, name, role, evidence, shape): name
             for name, (role, shape, evidence) in specialist_specs.items()
         }
+        specialist_errors = []
         for future in as_completed(future_map):
             name = future_map[future]
-            findings[name] = future.result()
+            try:
+                findings[name] = future.result()
+            except Exception as exc:
+                specialist_errors.append(f"{name}: {exc}")
+        if specialist_errors:
+            raise AgentRuntimeError(
+                "Specialist analysis did not complete: " + " | ".join(specialist_errors),
+                metrics_snapshot(),
+                list(timeline),
+            )
 
     # The planner receives all four independent findings AND a constraint-checked numeric plan.
     plan = tool("generate_procurement_options", build_procurement_plan, exposure, supplier_rankings)
@@ -207,7 +266,7 @@ The example values describe the required data types; do not return the placehold
         "Decision Auditor Agent",
         "Independently challenge the planner's proposed decisions. Check evidence traceability, supplier fit, lead-time exposure, capacity, MOQ, cost arithmetic, uncertainty, and whether any recommendation exceeds the supplied evidence. Do not rewrite the plan.",
         {"planner_output": planner, "specialist_findings": findings, "procurement_options": plan, "deterministic_constraint_issues": hard_issues},
-        {"approved_for_human_review": "boolean", "concerns": ["string"], "checks": [{"check": "string", "result": "pass|warning|fail", "evidence": "string"}], "required_human_actions": ["string"]},
+        {"approved_for_human_review": False, "concerns": ["string"], "checks": [{"check": "string", "result": "pass|warning|fail", "evidence": "string"}], "required_human_actions": ["string"]},
     )
 
     model_approved = bool(auditor.get("approved_for_human_review", False))
