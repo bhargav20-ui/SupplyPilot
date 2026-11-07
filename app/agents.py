@@ -19,10 +19,17 @@ from .core import (
 
 
 class AgentRuntimeError(RuntimeError):
-    def __init__(self, message: str, metrics: dict | None = None, timeline: list | None = None):
+    def __init__(
+        self,
+        message: str,
+        metrics: dict | None = None,
+        timeline: list | None = None,
+        quota_reset_seconds: int | None = None,
+    ):
         super().__init__(message)
         self.metrics = metrics or {"gemini_calls": 0, "tool_calls": 0}
         self.timeline = timeline or []
+        self.quota_reset_seconds = quota_reset_seconds
 
 
 PROMPT_OUTPUT = (
@@ -61,6 +68,57 @@ def _response_schema(shape: dict) -> dict:
         return {"type": "string"}
 
     return object_schema(shape)
+
+
+def _is_daily_quota_error(error: Exception) -> bool:
+    """Identify hard daily project/model quotas that cannot recover by retrying."""
+    message = str(error).lower()
+    return any(marker in message for marker in (
+        "requests per day",
+        "request per day",
+        "per day limit exceeded",
+        "generaterequestsperday",
+        "daily quota",
+        "generate_content_free_tier_requests",
+    ))
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    """Identify short-window rate limits; daily quotas are deliberately excluded."""
+    message = str(error).lower()
+    return any(marker in message for marker in (
+        "requests per minute",
+        "request per minute",
+        "tokens per minute",
+        "rate limit per minute",
+        "retrydelay",
+    )) and not _is_daily_quota_error(error)
+
+
+def _retry_delay_seconds(error: Exception) -> int:
+    """Read Google's RetryInfo without sleeping inside a worker thread."""
+    import re
+
+    message = str(error)
+    match = re.search(r"retryDelay\s*['\"]?\s*:\s*['\"](\d+(?:\.\d+)?)s", message, re.IGNORECASE)
+    if match:
+        return max(60, int(float(match.group(1))))
+    match = re.search(r"retry in\s+(?:(\d+)m)?(\d+(?:\.\d+)?)s", message, re.IGNORECASE)
+    if match:
+        minutes = int(match.group(1) or 0)
+        return max(60, minutes * 60 + int(float(match.group(2))))
+    return 3600
+
+
+def _friendly_quota_error(model: str, error: Exception, retry_seconds: int) -> str:
+    minutes = max(1, round(retry_seconds / 60))
+    return (
+        f"Gemini's daily request quota for {model} has been exhausted. "
+        "SupplyPilot has stopped further Gemini retries to protect your quota. "
+        f"New investigations are paused for about {minutes} minute(s). "
+        "Check Google AI Studio → Dashboard → Usage and Rate limits. "
+        "Wait for the quota reset, or enable a paid Gemini API tier with a spending limit."
+    )
 
 
 def _parse_json(text: str, agent_name: str) -> dict:
@@ -123,6 +181,7 @@ def run_investigation(
     counters = {"gemini_calls": 0, "tool_calls": 0}
     lock = threading.Lock()
     timeline: list[dict] = []
+    daily_quota_exhausted = threading.Event()
 
     def report_progress(name: str, status: str) -> None:
         if progress_callback is None:
@@ -158,7 +217,13 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
 """
         schema = _response_schema(output_shape)
         last_error = None
+        agent_quota_reset_seconds = None
         for attempt in range(3):
+            if daily_quota_exhausted.is_set():
+                last_error = AgentRuntimeError(
+                    f"{name} was not started because Gemini's daily quota was already exhausted by another agent."
+                )
+                break
             started = time.perf_counter()
             try:
                 with lock:
@@ -186,22 +251,33 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
                 report_progress(name, "completed")
                 return result
             except Exception as exc:
-                last_error = exc
                 message = str(exc).lower()
+                if _is_daily_quota_error(exc):
+                    daily_quota_exhausted.set()
+                    agent_quota_reset_seconds = _retry_delay_seconds(exc)
+                    last_error = RuntimeError(_friendly_quota_error(model, exc, agent_quota_reset_seconds))
+                    break  # A daily request quota cannot be fixed by another immediate request.
+                last_error = exc
                 malformed_output = isinstance(exc, AgentRuntimeError) and any(
                     marker in message for marker in ("invalid json", "empty response", "must be a json object")
                 )
-                transient = any(code in message for code in ("503", "unavailable", "429", "resource_exhausted", "500", "internal server error", "deadline", "timeout"))
-                # Retry malformed model output once with a shorter repair instruction;
-                # retry transient provider failures with backoff. Do not retry auth or quota errors endlessly.
-                should_retry = (malformed_output and attempt == 0) or (transient and attempt < 2)
+                provider_5xx = any(code in message for code in ("503", "unavailable", "500", "internal server error", "deadline", "timeout"))
+                short_rate_limit = _is_rate_limit_error(exc)
+                # Repair malformed output once. Retry 5xx failures with backoff.
+                # Retry explicit per-minute limits only once; never spin on daily quotas.
+                should_retry = (malformed_output and attempt == 0) or (provider_5xx and attempt < 2) or (short_rate_limit and attempt == 0)
                 if not should_retry:
                     break
-                if transient:
+                if provider_5xx or short_rate_limit:
                     time.sleep(1.25 * (attempt + 1))
         timeline.append({"type": "agent", "name": name, "duration_ms": 0, "status": "failed"})
         report_progress(name, "failed")
-        raise AgentRuntimeError(f"{name} failed after {attempt + 1} attempt(s): {last_error}", metrics_snapshot(), list(timeline))
+        raise AgentRuntimeError(
+            f"{name} failed after {attempt + 1} attempt(s): {last_error}",
+            metrics_snapshot(),
+            list(timeline),
+            quota_reset_seconds=agent_quota_reset_seconds,
+        )
 
     # Four independent specialists each call their own analytical tool, then reason over its output.
     forecast = tool("forecast_demand", forecast_demand, sales)
@@ -245,10 +321,16 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
             except Exception as exc:
                 specialist_errors.append(f"{name}: {exc}")
         if specialist_errors:
+            quota_delays = [
+                future.exception().quota_reset_seconds
+                for future in future_map
+                if future.exception() is not None and future.exception().quota_reset_seconds
+            ]
             raise AgentRuntimeError(
                 "Specialist analysis did not complete: " + " | ".join(specialist_errors),
                 metrics_snapshot(),
                 list(timeline),
+                quota_reset_seconds=max(quota_delays) if quota_delays else None,
             )
 
     # The planner receives all four independent findings AND a constraint-checked numeric plan.
