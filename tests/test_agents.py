@@ -133,7 +133,7 @@ def test_daily_free_tier_quota_is_not_retried_and_returns_reset_guidance(monkeyp
             read_sample("suppliers.csv"),
         )
 
-    assert len(calls) <= 4  # one initial request per parallel specialist at most
+    assert len(calls) == 1  # serial specialist queue stops at the first daily-quota error
     assert error.value.quota_reset_seconds == 2650
     assert "daily request quota" in str(error.value).lower()
     assert "stopped further gemini retries" in str(error.value).lower()
@@ -190,3 +190,50 @@ def test_persistently_malformed_agent_response_stops_after_one_repair_retry(monk
     assert set(Counter(name for name, _ in calls).values()) == {2}
     assert sum(1 for _, tokens in calls if tokens == 4096) == 4
     assert "failed after 2 attempt(s)" in str(error.value)
+
+
+
+def test_repeated_503_stops_specialist_queue_after_one_delayed_retry(monkeypatch):
+    import pytest
+    from app.agents import AgentRuntimeError
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    monkeypatch.setattr("app.agents.time.sleep", lambda *_: None)
+    calls = []
+    progress = []
+
+    def fail_overloaded(model, contents, config):
+        name = contents.split("You are the ", 1)[1].split(" in SupplyPilot", 1)[0]
+        calls.append(name)
+        raise RuntimeError("503 UNAVAILABLE: model temporarily overloaded")
+
+    fake_models = pytypes.SimpleNamespace(generate_content=fail_overloaded)
+    fake_client = pytypes.SimpleNamespace(models=fake_models)
+    fake_genai = pytypes.ModuleType("google.genai")
+    fake_genai.Client = lambda api_key: fake_client
+    fake_types = pytypes.ModuleType("google.genai.types")
+    fake_types.GenerateContentConfig = lambda **kwargs: kwargs
+    fake_types.ThinkingConfig = lambda **kwargs: kwargs
+    fake_genai.types = fake_types
+    fake_google = pytypes.ModuleType("google")
+    fake_google.__path__ = []
+    fake_google.genai = fake_genai
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    with pytest.raises(AgentRuntimeError) as error:
+        run_investigation(
+            "Test sequential overload protection",
+            read_sample("sales_history.csv"),
+            read_sample("inventory.csv"),
+            read_sample("suppliers.csv"),
+            progress_callback=lambda name, status: progress.append((name, status)),
+        )
+
+    assert calls == ["Demand Forecasting Agent", "Demand Forecasting Agent"]
+    skipped = {name for name, status in progress if status == "skipped"}
+    assert skipped == {
+        "Inventory Risk Agent", "Supplier Intelligence Agent", "Supply Risk Agent"
+    }
+    assert "repeated 503 UNAVAILABLE" in str(error.value)
