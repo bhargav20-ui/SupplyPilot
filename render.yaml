@@ -18,4 +18,4 @@ services:
       - key: PUBLIC_RUN_WINDOW_SECONDS
         value: "900"
       - key: PUBLIC_MAX_CONCURRENT_RUNS
-        value: "2"
+        value: "1"
