@@ -160,7 +160,7 @@ async function loadHealth() {
       $("model-label").textContent = `${health.model} · try again in about ${minutes} min`;
     } else {
       $("runtime-label").textContent = health.ai_configured ? "AI ready · Public access" : "Gemini API key required";
-      $("model-label").textContent = health.model;
+      $("model-label").textContent = `${health.model} · v${health.version || "unknown"}`;
     }
   } catch {
     $("runtime-label").textContent = "Runtime unavailable";
