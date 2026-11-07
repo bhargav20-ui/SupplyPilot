@@ -160,3 +160,14 @@ def test_daily_quota_circuit_breaker_blocks_new_public_jobs(monkeypatch):
     assert response.status_code == 429
     assert "daily request quota" in response.json()["detail"].lower()
     assert int(response.headers["retry-after"]) > 0
+
+
+def test_health_reports_gemini_quota_circuit_breaker_state(monkeypatch):
+    import time
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module, "_GEMINI_QUOTA_PAUSED_UNTIL", time.time() + 120)
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["gemini_quota_paused"] is True
+    assert response.json()["gemini_quota_retry_after_seconds"] > 0
