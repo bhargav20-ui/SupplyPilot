@@ -286,6 +286,7 @@ def _read_sample(name: str) -> list[dict]:
 @app.get("/api/health")
 def health():
     limit, window_seconds, max_concurrent = _public_limits()
+    quota_wait = _gemini_quota_pause_remaining()
     return {
         "status": "ok",
         "version": app.version,
@@ -294,6 +295,8 @@ def health():
         "public_access": True,
         "rate_limit": {"runs": limit, "window_seconds": window_seconds},
         "max_concurrent_runs": max_concurrent,
+        "gemini_quota_paused": quota_wait > 0,
+        "gemini_quota_retry_after_seconds": quota_wait,
         "mode": "Public guest access · asynchronous Gemini multi-agent jobs",
     }
 
