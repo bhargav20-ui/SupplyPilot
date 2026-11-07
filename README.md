@@ -12,6 +12,7 @@ It is deliberately **not** an inventory CRUD dashboard. Each specialist has a bo
 - Assesses single-source exposure, recorded capacity, and resilience gaps.
 - Builds MOQ- and capacity-constrained procurement options with estimated cost.
 - Uses a final Gemini planning agent to synthesize the specialist findings and an independent Gemini auditor to challenge the recommendation.
+- Runs investigations as background jobs so a multi-agent workflow does not keep one browser/API request open for the full model execution. The dashboard polls job progress and reports provider/hosting failures explicitly.
 - Reports actual Gemini request counts and deterministic analytics-tool executions. A provider failure is surfaced; no mock AI findings are substituted.
 
 ## Multi-agent architecture
@@ -100,7 +101,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Open <http://127.0.0.1:8000>.
 
-The `/api/health` endpoint confirms whether the API key is configured. Loading sample data works without a key, but an actual agent investigation requires a valid Gemini API key and model access. The server returns a visible error if Gemini is unavailable.
+The `/api/health` endpoint confirms whether the API key is configured. Loading sample data works without a key, but an actual agent investigation requires a valid Gemini API key and model access. `POST /api/investigate` validates the data and returns a task ID immediately; poll `GET /api/investigations/{task_id}` for agent progress and the final result. The server returns a visible error if Gemini is unavailable.
 
 ## Run tests
 
