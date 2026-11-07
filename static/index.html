@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b1020" />
+  <meta name="description" content="SupplyPilot multi-agent supply-chain decision intelligence." />
+  <title>SupplyPilot — Supply Chain Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/">
+        <div class="brand-mark"><span></span><span></span><span></span></div>
+        <div><strong>SUPPLY<span>PILOT</span></strong><small>DECISION INTELLIGENCE</small></div>
+      </a>
+      <div class="workspace-label">WORKSPACE</div>
+      <nav class="side-nav">
+        <a class="nav-item active" href="#overview"><span class="nav-icon">◫</span> Control tower <span class="nav-dot"></span></a>
+        <a class="nav-item" href="#data-input"><span class="nav-icon">⌁</span> Data sources</a>
+        <a class="nav-item" href="#agent-room"><span class="nav-icon">◎</span> Agent workspace</a>
+        <a class="nav-item" href="#procurement"><span class="nav-icon">⇄</span> Procurement plan</a>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="system-card">
+        <div class="system-card-top"><span class="pulse"></span> SYSTEM STATUS</div>
+        <strong id="runtime-label">Checking runtime…</strong>
+        <small id="model-label">Gemini · model loading</small>
+      </div>
+      <div class="sidebar-foot"><span>SUPPLYPILOT</span><span>V1.0.0</span></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar" id="overview">
+        <div class="breadcrumb">WORKSPACE <span>/</span> CONTROL TOWER</div>
+        <div class="topbar-right"><div class="live-indicator"><i></i> LOCAL WORKSPACE</div><div class="avatar">SP</div></div>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow"><span class="eyebrow-line"></span> AUTONOMOUS OPERATIONS INTELLIGENCE</div>
+          <h1>See around the<br><em>supply chain.</em></h1>
+          <p>Coordinate specialist agents to turn demand, inventory and supplier signals into an evidence-backed procurement decision.</p>
+          <div class="hero-actions"><a class="button button-primary" href="#data-input">Start an analysis <span>↗</span></a><span class="hero-note">Evidence first. Human-approved decisions.</span></div>
+        </div>
+        <div class="hero-graphic" aria-hidden="true">
+          <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div>
+          <div class="orbit-core"><div class="core-glyph">S<span>+</span></div><small>SUPPLY<br>NETWORK</small></div>
+          <div class="orbit-node node-a"><b>DEMAND</b><span>↗</span></div><div class="orbit-node node-b"><b>INVENTORY</b><span>◫</span></div><div class="orbit-node node-c"><b>SUPPLIERS</b><span>⌁</span></div>
+          <div class="graphic-caption">CONNECTED SIGNALS <span>·</span> COORDINATED DECISIONS</div>
+        </div>
+      </section>
+
+      <section class="stat-grid" id="stat-grid">
+        <article class="stat-card"><div class="stat-label">SKUs ANALYZED <span>01</span></div><div class="stat-value" id="stat-skus">—</div><div class="stat-foot">Across the submitted catalog</div></article>
+        <article class="stat-card"><div class="stat-label">AT-RISK SKUs <span>02</span></div><div class="stat-value" id="stat-risk">—</div><div class="stat-foot">Critical, high and medium exposure</div></article>
+        <article class="stat-card"><div class="stat-label">PROPOSED ORDER UNITS <span>03</span></div><div class="stat-value" id="stat-units">—</div><div class="stat-foot">Constraint-checked quantities</div></article>
+        <article class="stat-card accent-stat"><div class="stat-label">ESTIMATED PROCUREMENT <span>04</span></div><div class="stat-value" id="stat-cost">—</div><div class="stat-foot">Using uploaded supplier currency</div></article>
+      </section>
+
+      <section class="section-block" id="data-input">
+        <div class="section-heading"><div><div class="eyebrow">01 / INVESTIGATION INPUT</div><h2>Bring your operating data.</h2><p>Load the sample workspace or provide your own three CSV datasets.</p></div><div class="section-tag">3 DATASETS REQUIRED</div></div>
+        <div class="input-toolbar"><button class="button button-quiet" id="load-sample">＋ Load sample data</button><span class="sample-note" id="sample-note">Synthetic demonstration dataset · 42 days · 4 SKUs</span><button class="text-button" id="clear-data">Clear inputs</button></div>
+        <div class="data-grid">
+          <article class="data-panel"><div class="data-panel-head"><div class="data-icon violet">D</div><div><strong>Demand history</strong><small>Daily sales by SKU</small></div><span class="required-pill">REQUIRED</span></div><div class="field-meta">CSV · date, sku, product, units_sold</div><textarea id="sales-input" spellcheck="false" placeholder="date,sku,product,units_sold&#10;2026-10-01,SKU-101,Widget Alpha,42"></textarea><label class="file-pick">↑ Import CSV<input type="file" id="sales-file" accept=".csv,text/csv"></label><div class="data-count" id="sales-count">No data loaded</div></article>
+          <article class="data-panel"><div class="data-panel-head"><div class="data-icon blue">I</div><div><strong>Inventory position</strong><small>Stock and replenishment policy</small></div><span class="required-pill">REQUIRED</span></div><div class="field-meta">CSV · sku, product, on_hand, lead_time_days, safety_stock</div><textarea id="inventory-input" spellcheck="false" placeholder="sku,product,on_hand,lead_time_days,safety_stock&#10;SKU-101,Widget Alpha,120,8,45"></textarea><label class="file-pick">↑ Import CSV<input type="file" id="inventory-file" accept=".csv,text/csv"></label><div class="data-count" id="inventory-count">No data loaded</div></article>
+          <article class="data-panel"><div class="data-panel-head"><div class="data-icon amber">S</div><div><strong>Supplier network</strong><small>Commercial and service metrics</small></div><span class="required-pill">REQUIRED</span></div><div class="field-meta">CSV · supplier, sku, unit_cost, lead_time_days, on_time_rate, quality_rate, capacity_units, min_order_qty</div><textarea id="suppliers-input" spellcheck="false" placeholder="supplier,sku,unit_cost,lead_time_days,on_time_rate,quality_rate,capacity_units,min_order_qty"></textarea><label class="file-pick">↑ Import CSV<input type="file" id="suppliers-file" accept=".csv,text/csv"></label><div class="data-count" id="suppliers-count">No data loaded</div></article>
+        </div>
+        <div class="analysis-bar"><div class="analysis-title"><span class="analysis-spark">✳</span><div><strong>Investigation brief</strong><small>What decision should the agents investigate?</small></div></div><input id="workspace-key" type="password" autocomplete="off" placeholder="Workspace key (when enabled)" aria-label="Workspace access key"/><input id="investigation-title" value="Assess replenishment priorities and supplier exposure for the next 7 days" maxlength="180"/><button class="button button-primary run-button" id="run-analysis">Run agent analysis <span>↗</span></button></div>
+        <div class="error-banner hidden" id="error-banner"><span>!</span><div><strong>Investigation could not complete</strong><p id="error-message"></p></div><button id="dismiss-error" aria-label="Dismiss">×</button></div>
+      </section>
+
+      <section class="section-block" id="agent-room">
+        <div class="section-heading compact-heading"><div><div class="eyebrow">02 / MULTI-AGENT WORKSPACE</div><h2>Six agents. One coordinated decision.</h2><p>Four specialists run independently; the planner and auditor depend on their findings.</p></div><div class="execution-badge" id="execution-badge"><i></i> AWAITING DATA</div></div>
+        <div class="agent-flow">
+          <div class="flow-caption">PARALLEL SPECIALISTS <span>01—04</span></div>
+          <div class="agent-grid">
+            <article class="agent-card" data-agent="Demand Forecasting Agent"><div class="agent-card-top"><div class="agent-symbol symbol-violet">↗</div><span class="agent-state">IDLE</span></div><strong>Demand Forecasting</strong><p>Reads sales velocity, trend shifts and forecast sensitivity.</p><div class="agent-foot"><span>DEMAND SIGNALS</span><span>01</span></div></article>
+            <article class="agent-card" data-agent="Inventory Risk Agent"><div class="agent-card-top"><div class="agent-symbol symbol-blue">▤</div><span class="agent-state">IDLE</span></div><strong>Inventory Risk</strong><p>Calculates cover, reorder points and stockout exposure.</p><div class="agent-foot"><span>STOCK POSITION</span><span>02</span></div></article>
+            <article class="agent-card" data-agent="Supplier Intelligence Agent"><div class="agent-card-top"><div class="agent-symbol symbol-amber">⌁</div><span class="agent-state">IDLE</span></div><strong>Supplier Intelligence</strong><p>Evaluates cost, quality, delivery and capacity trade-offs.</p><div class="agent-foot"><span>SUPPLIER SCORE</span><span>03</span></div></article>
+            <article class="agent-card" data-agent="Supply Risk Agent"><div class="agent-card-top"><div class="agent-symbol symbol-green">⌘</div><span class="agent-state">IDLE</span></div><strong>Supply Risk</strong><p>Finds single-source exposure and resilience gaps.</p><div class="agent-foot"><span>NETWORK RESILIENCE</span><span>04</span></div></article>
+          </div>
+          <div class="flow-merge"><span></span><b>FINDINGS CONSOLIDATED</b><span></span></div>
+          <div class="dependent-grid">
+            <article class="dependent-card" data-agent="Procurement Planning Agent"><div class="dependent-icon">⇄</div><div><div class="dependent-meta">05 / DECISION SYNTHESIS</div><strong>Procurement Planning Agent</strong><p>Combines specialist findings, weighs trade-offs and prioritizes constrained order options.</p></div><span class="agent-state">IDLE</span></article>
+            <article class="dependent-card auditor-card" data-agent="Decision Auditor Agent"><div class="dependent-icon">✓</div><div><div class="dependent-meta">06 / INDEPENDENT REVIEW</div><strong>Decision Auditor Agent</strong><p>Challenges assumptions, checks evidence traceability and flags risks before human review.</p></div><span class="agent-state">IDLE</span></article>
+          </div>
+        </div>
+        <div class="agent-insights hidden" id="agent-insights"></div>
+      </section>
+
+      <section class="section-block" id="procurement">
+        <div class="section-heading compact-heading"><div><div class="eyebrow">03 / DECISION OUTPUT</div><h2>Procurement, with context.</h2><p>Recommendations are proposals only. No order is placed or supplier contacted.</p></div><div class="risk-badge hidden" id="risk-badge">RISK —</div></div>
+        <div class="output-grid">
+          <article class="output-card plan-summary"><div class="output-kicker">PLANNER'S DECISION</div><h3 id="decision-summary">Your decision brief will appear here.</h3><div class="output-list" id="priority-actions"><div class="empty-state">Run an investigation to generate evidence-backed priorities.</div></div></article>
+          <article class="output-card audit-summary"><div class="output-kicker">INDEPENDENT AUDIT</div><div class="audit-status" id="audit-status"><span class="audit-icon">◎</span><strong>Awaiting review</strong></div><p id="audit-copy">The auditor will challenge the plan after all four specialist findings are available.</p><div class="audit-checks" id="audit-checks"></div></article>
+        </div>
+        <article class="table-card"><div class="table-heading"><div><div class="output-kicker">CONSTRAINT-CHECKED ORDER OPTIONS</div><h3>Proposed purchase lines</h3></div><span class="table-caption" id="order-count">NO ANALYSIS</span></div><div class="table-wrap"><table><thead><tr><th>SKU / PRODUCT</th><th>SUPPLIER</th><th>QTY</th><th>UNIT COST</th><th>EST. TOTAL</th><th>LEAD TIME</th><th>FIT SCORE</th></tr></thead><tbody id="orders-body"><tr><td colspan="7" class="table-empty">No procurement options yet. Load data and run the multi-agent analysis.</td></tr></tbody></table></div><div class="table-bottom" id="table-bottom">Planning estimate only · Values and currency follow the uploaded supplier dataset.</div></article>
+        <div class="shortage-panel hidden" id="shortage-panel"><strong>Uncovered demand</strong><div id="shortage-list"></div></div>
+      </section>
+
+      <footer class="footer"><div class="footer-brand">SUPPLYPILOT <span>·</span> MULTI-AGENT DECISION INTELLIGENCE</div><div>Built for evidence-led operations <span>·</span> Human approval required</div></footer>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

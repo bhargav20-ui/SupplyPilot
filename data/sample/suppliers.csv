@@ -1,0 +1,14 @@
+<PARSED TEXT FOR SHEET: 1 / 1 TABS
+TAB NAME: suppliers.csv>
+index,supplier,sku,unit_cost,lead_time_days,on_time_rate,quality_rate,capacity_units,min_order_qty,currency
+0,Northstar Components,SKU-101,8.4,7,0.97,0.985,320,20,USD
+1,Meridian Industrial,SKU-101,7.95,12,0.89,0.97,260,40,USD
+2,Atlas Supply Co,SKU-101,9.1,5,0.93,0.995,180,25,USD
+3,Northstar Components,SKU-102,3.2,4,0.98,0.99,300,20,USD
+4,Meridian Industrial,SKU-102,2.95,8,0.9,0.965,240,30,USD
+5,Atlas Supply Co,SKU-102,3.45,3,0.96,0.995,180,20,USD
+6,Meridian Industrial,SKU-103,14.8,11,0.91,0.97,450,50,USD
+7,Atlas Supply Co,SKU-103,15.6,7,0.95,0.99,300,40,USD
+8,Northstar Components,SKU-103,14.2,15,0.87,0.96,260,60,USD
+9,Northstar Components,SKU-104,1.8,6,0.97,0.985,500,50,USD
+10,Atlas Supply Co,SKU-104,1.95,4,0.95,0.99,350,50,USD

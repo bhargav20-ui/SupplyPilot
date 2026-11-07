@@ -1,0 +1,7 @@
+<PARSED TEXT FOR SHEET: 1 / 1 TABS
+TAB NAME: inventory.csv>
+index,sku,product,on_hand,lead_time_days,safety_stock
+0,SKU-101,Widget Alpha,180,9,80
+1,SKU-102,Widget Beta,175,5,40
+2,SKU-103,Widget Gamma,110,12,150
+3,SKU-104,Widget Delta,150,10,30
