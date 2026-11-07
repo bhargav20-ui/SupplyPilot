@@ -154,8 +154,14 @@ function escapeHTML(value) { return String(value ?? "").replace(/[&<>"']/g, ch =
 async function loadHealth() {
   try {
     const health = await requestJson("/api/health");
-    $("runtime-label").textContent = health.ai_configured ? "AI ready · Public access" : "Gemini API key required";
-    $("model-label").textContent = health.model;
+    if (health.gemini_quota_paused) {
+      const minutes = Math.max(1, Math.ceil((health.gemini_quota_retry_after_seconds || 0) / 60));
+      $("runtime-label").textContent = "Gemini quota temporarily paused";
+      $("model-label").textContent = `${health.model} · try again in about ${minutes} min`;
+    } else {
+      $("runtime-label").textContent = health.ai_configured ? "AI ready · Public access" : "Gemini API key required";
+      $("model-label").textContent = health.model;
+    }
   } catch {
     $("runtime-label").textContent = "Runtime unavailable";
     $("model-label").textContent = "Check connection";
