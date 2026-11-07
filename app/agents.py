@@ -5,7 +5,6 @@ import json
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
 from .core import (
@@ -199,6 +198,7 @@ def run_investigation(
     lock = threading.Lock()
     timeline: list[dict] = []
     daily_quota_exhausted = threading.Event()
+    provider_unavailable = threading.Event()
 
     def report_progress(name: str, status: str) -> None:
         if progress_callback is None:
@@ -239,7 +239,12 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
         for attempt in range(2):
             if daily_quota_exhausted.is_set():
                 last_error = AgentRuntimeError(
-                    f"{name} was not started because Gemini's daily quota was already exhausted by another agent."
+                    f"{name} was not started because Gemini's daily quota was already exhausted."
+                )
+                break
+            if provider_unavailable.is_set():
+                last_error = AgentRuntimeError(
+                    f"{name} was not started because Gemini remained temporarily unavailable after a previous agent."
                 )
                 break
             started = time.perf_counter()
@@ -288,13 +293,22 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
                 )
                 provider_5xx = any(code in message for code in ("503", "unavailable", "500", "internal server error", "deadline", "timeout"))
                 short_rate_limit = _is_rate_limit_error(exc)
-                # Repair malformed output once. Retry 5xx failures with backoff.
-                # Retry explicit per-minute limits only once; never spin on daily quotas.
+                # A 503 is provider overload, not quota exhaustion. Give it one
+                # paced retry. If it remains unavailable, stop sending this job's
+                # remaining specialist requests rather than amplifying the burst.
+                if provider_5xx and attempt >= 1:
+                    provider_unavailable.set()
+                    break
+
+                # Repair malformed output once. Short-window quota errors receive
+                # one delayed retry. Daily quotas were handled above and never retry.
                 should_retry = attempt == 0 and (malformed_output or provider_5xx or short_rate_limit)
                 if not should_retry:
                     break
-                if provider_5xx or short_rate_limit:
-                    time.sleep(1.25 * (attempt + 1))
+                if provider_5xx:
+                    time.sleep(10.0)
+                elif short_rate_limit:
+                    time.sleep(min(60, max(10, _retry_delay_seconds(exc))))
         timeline.append({"type": "agent", "name": name, "duration_ms": 0, "status": "failed"})
         report_progress(name, "failed")
         raise AgentRuntimeError(
@@ -332,31 +346,36 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
             {"supply_risk": supply_risks},
         ),
     }
+    # Keep specialist requests independent but paced one at a time. This avoids
+    # sending four simultaneous requests into a shared, burst-limited model pool.
     findings: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        future_map = {
-            pool.submit(ask_agent, name, role, evidence, shape): name
-            for name, (role, shape, evidence) in specialist_specs.items()
-        }
-        specialist_errors = []
-        for future in as_completed(future_map):
-            name = future_map[future]
-            try:
-                findings[name] = future.result()
-            except Exception as exc:
-                specialist_errors.append(f"{name}: {exc}")
-        if specialist_errors:
-            quota_delays = [
-                future.exception().quota_reset_seconds
-                for future in future_map
-                if future.exception() is not None and future.exception().quota_reset_seconds
-            ]
-            raise AgentRuntimeError(
-                "Specialist analysis did not complete: " + " | ".join(specialist_errors),
-                metrics_snapshot(),
-                list(timeline),
-                quota_reset_seconds=max(quota_delays) if quota_delays else None,
-            )
+    specialist_errors = []
+    quota_delays = []
+    for name, (role, shape, evidence) in specialist_specs.items():
+        if daily_quota_exhausted.is_set():
+            message = f"{name}: skipped because the Gemini daily request quota is exhausted."
+            report_progress(name, "skipped")
+            specialist_errors.append(message)
+            continue
+        if provider_unavailable.is_set():
+            message = f"{name}: skipped because Gemini returned repeated 503 UNAVAILABLE responses."
+            report_progress(name, "skipped")
+            specialist_errors.append(message)
+            continue
+        try:
+            findings[name] = ask_agent(name, role, evidence, shape)
+        except Exception as exc:
+            specialist_errors.append(f"{name}: {exc}")
+            if isinstance(exc, AgentRuntimeError) and exc.quota_reset_seconds:
+                quota_delays.append(exc.quota_reset_seconds)
+
+    if specialist_errors:
+        raise AgentRuntimeError(
+            "Specialist analysis did not complete: " + " | ".join(specialist_errors),
+            metrics_snapshot(),
+            list(timeline),
+            quota_reset_seconds=max(quota_delays) if quota_delays else None,
+        )
 
     # The planner receives all four independent findings AND a constraint-checked numeric plan.
     plan = tool("generate_procurement_options", build_procurement_plan, exposure, supplier_rankings)
