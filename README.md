@@ -185,3 +185,7 @@ Each successful end-to-end investigation normally makes six Gemini generation re
 SupplyPilot classifies daily quota exhaustion separately from short-window rate limits. It does not retry a depleted daily quota, extracts Google's retry hint, and temporarily pauses new public investigations through a process-local circuit breaker. The `/api/health` response exposes the pause state and remaining wait. The dashboard displays the paused state to visitors.
 
 This circuit breaker is an in-process safeguard for the current single-instance demo; it is reset by a process restart and is not a replacement for a persistent shared quota service. Before advertising the app to a large audience, enable an appropriate Gemini billing tier, set a conservative budget/spending alert, monitor project usage, and implement persistent global quotas and abuse controls. A budget alert is not the same as a hard spending cap.
+
+## Structured agent response reliability
+
+Each Gemini agent uses a strict JSON Schema. Outputs are deliberately compact (at most three items per list), the model is requested to use low thinking for these short evidence-synthesis steps, and the initial response budget is 2,048 tokens. If a response is incomplete or malformed, the agent gets one repair attempt with a 4,096-token output budget. A persistently invalid response fails visibly after two attempts; SupplyPilot does not silently invent or substitute agent findings. The dashboard displays the deployed app version from `/api/health` so a test can confirm which release is running.
