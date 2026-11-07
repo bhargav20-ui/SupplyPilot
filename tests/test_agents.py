@@ -18,10 +18,17 @@ def read_sample(name):
 def test_orchestration_runs_four_specialists_then_planner_and_auditor(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
     calls = []
+    attempts = {}
 
     def fake_generate_content(model, contents, config):
         name = contents.split("You are the ", 1)[1].split(" in SupplyPilot", 1)[0]
         calls.append(name)
+        assert config["response_mime_type"] == "application/json"
+        assert config["response_json_schema"]["type"] == "object"
+        attempts[name] = attempts.get(name, 0) + 1
+        if name == "Inventory Risk Agent" and attempts[name] == 1:
+            # Reproduce the malformed/truncated JSON returned by the live model.
+            return pytypes.SimpleNamespace(text='{"summary":"Inventory risk')
         if name == "Demand Forecasting Agent":
             output = {"summary":"Recent demand was reviewed.","key_findings":["Forecast output reviewed."],"risks":[],"forecast_confidence":"medium","watchlist_skus":["SKU-101"]}
         elif name == "Inventory Risk Agent":
@@ -33,6 +40,7 @@ def test_orchestration_runs_four_specialists_then_planner_and_auditor(monkeypatc
         elif name == "Procurement Planning Agent":
             output = {"decision_summary":"Prioritize the SKUs with shorter cover.","procurement_rationale":["The proposal respects recorded supplier constraints."],"priority_actions":["Review proposed orders."],"trade_offs":[],"assumptions":[]}
         elif name == "Decision Auditor Agent":
+            assert config["response_json_schema"]["properties"]["approved_for_human_review"]["type"] == "boolean"
             output = {"approved_for_human_review":True,"concerns":[],"checks":[{"check":"Evidence is present","result":"pass","evidence":"Submitted input datasets."}],"required_human_actions":["Verify supplier terms before purchase."]}
         else:
             raise AssertionError(f"Unexpected agent: {name}")
@@ -61,12 +69,13 @@ def test_orchestration_runs_four_specialists_then_planner_and_auditor(monkeypatc
         progress_callback=lambda name, status: progress.append((name, status)),
     )
 
-    assert len(calls) == 6
+    assert len(calls) == 7  # one malformed specialist response was retried once
+    assert attempts["Inventory Risk Agent"] == 2
     assert set(calls) == {
         "Demand Forecasting Agent", "Inventory Risk Agent", "Supplier Intelligence Agent",
         "Supply Risk Agent", "Procurement Planning Agent", "Decision Auditor Agent",
     }
-    assert result["metrics"]["gemini_calls"] == 6
+    assert result["metrics"]["gemini_calls"] == 7
     assert result["metrics"]["tool_calls"] == 6
     assert result["status"] == "ready_for_human_review"
     assert result["data"]["hard_constraint_issues"] == []
