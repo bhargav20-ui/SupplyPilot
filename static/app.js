@@ -28,7 +28,9 @@ function normalizeCell(value) {
 }
 function setDataset(name, rows) {
   $(name + "-input").value = rows.length ? JSON.stringify(rows, null, 2) : "";
-  $(name + "-count").textContent = rows.length ? `${rows.length.toLocaleString()} rows loaded` : "No data loaded";
+  const count = $(name + "-count");
+  count.textContent = rows.length ? `${rows.length.toLocaleString()} rows loaded` : "Required";
+  count.classList.toggle("loaded", rows.length > 0);
 }
 function getDataset(name) {
   const raw = $(name + "-input").value.trim();
@@ -67,11 +69,6 @@ function currency(value, code="USD") {
 function renderResult(result) {
   lastResult = result;
   const data = result.data, plan = data.procurement_plan;
-  const risks = data.inventory_exposure.filter(x => ["CRITICAL","HIGH","MEDIUM"].includes(x.risk_level)).length;
-  $("stat-skus").textContent = data.inventory_exposure.length;
-  $("stat-risk").textContent = risks;
-  $("stat-units").textContent = plan.total_units.toLocaleString();
-  $("stat-cost").textContent = currency(plan.estimated_cost, plan.currency);
   $("risk-badge").textContent = `OVERALL RISK · ${result.overall_risk}`;
   $("risk-badge").className = `risk-badge ${result.overall_risk.toLowerCase()}`;
   $("risk-badge").classList.remove("hidden");
@@ -86,13 +83,14 @@ function renderResult(result) {
   const actions = [...plannerActions, ...rationale.slice(0,2)];
   $("priority-actions").innerHTML = actions.length ? actions.map(x => `<div class="output-action">${escapeHTML(x)}</div>`).join("") : `<div class="empty-state">No priority actions returned.</div>`;
   const audit = result.auditor;
+  $("audit-status").className = `audit-status ${result.status === "ready_for_human_review" ? "approved" : "review"}`;
   $("audit-status").innerHTML = `<span class="audit-icon">${result.status === "ready_for_human_review" ? "✓" : "!"}</span><strong>${result.status === "ready_for_human_review" ? "Ready for human review" : "Human review required"}</strong>`;
   $("audit-copy").textContent = (audit.concerns || []).join(" ") || (result.status === "ready_for_human_review" ? "The auditor did not identify a blocking concern in the submitted evidence." : "The auditor did not approve this plan for human review. Read the checks and required actions below.");
   const auditChecks = Array.isArray(audit.checks) ? audit.checks : [];
   const hardIssues = Array.isArray(data.hard_constraint_issues) ? data.hard_constraint_issues : [];
   const checks = [...auditChecks.map(x => ({label:x.check, result:x.result})), ...(hardIssues.map(x=>({label:x,result:"fail"})))];
   $("audit-checks").innerHTML = checks.slice(0,5).map(x=>`<div class="audit-check ${escapeHTML(x.result)}"><b>${x.result === "pass" ? "✓" : x.result === "warning" ? "!" : "×"}</b><span>${escapeHTML(x.label)}</span></div>`).join("");
-  $("orders-body").innerHTML = plan.orders.length ? plan.orders.map(o=>`<tr><td class="sku-cell"><strong>${escapeHTML(o.sku)}</strong><small>${escapeHTML(o.product)}</small></td><td>${escapeHTML(o.supplier)}</td><td>${o.quantity.toLocaleString()}</td><td>${currency(o.unit_cost, plan.currency)}</td><td class="cost-cell">${currency(o.estimated_cost,plan.currency)}</td><td>${o.lead_time_days} days</td><td><span class="score-chip">${o.supplier_score}/100</span></td></tr>`).join("") : `<tr><td colspan="7" class="table-empty">No reorder quantity was generated for the submitted stock and demand.</td></tr>`;
+  $("orders-body").innerHTML = plan.orders.length ? plan.orders.map(o=>`<tr><td class="sku-cell"><strong>${escapeHTML(o.sku)}</strong><small>${escapeHTML(o.product)}</small></td><td>${escapeHTML(o.supplier)}</td><td>${o.quantity.toLocaleString()}</td><td class="cost-cell">${currency(o.estimated_cost,plan.currency)}</td><td>${o.lead_time_days} days</td></tr>`).join("") : `<tr><td colspan="5" class="table-empty">No reorder quantity was generated for the submitted stock and demand.</td></tr>`;
   $("order-count").textContent = `${plan.total_order_lines} ORDER LINES`;
   $("table-bottom").textContent = `${plan.total_units.toLocaleString()} proposed units · Estimated total ${currency(plan.estimated_cost,plan.currency)} · ${plan.note}`;
   if (plan.shortages.length) {
@@ -115,11 +113,13 @@ function escapeHTML(value) { return String(value ?? "").replace(/[&<>"']/g, ch =
 async function loadHealth() {
   try {
     const response = await fetch("/api/health"); const health = await response.json();
-    $("runtime-label").textContent = health.ai_configured ? "AI runtime configured" : "API key required";
-    $("model-label").textContent = `${health.model} · Gemini API${health.access_key_required ? " · access key enabled" : ""}`;
+    $("runtime-label").textContent = health.ai_configured ? "AI ready" : "Gemini API key required";
+    $("model-label").textContent = health.model;
+    $("workspace-key-wrap").hidden = !health.access_key_required;
   } catch {
     $("runtime-label").textContent = "Runtime unavailable";
-    $("model-label").textContent = "Check server connection";
+    $("model-label").textContent = "Check connection";
+    $("workspace-key-wrap").hidden = true;
   }
 }
 async function loadSample() {
@@ -140,7 +140,7 @@ async function runAnalysis() {
     };
     if (payload.title.length < 5) throw new Error("Please enter an investigation brief of at least five characters.");
   } catch (error) { showError(error.message); return; }
-  $("run-analysis").disabled = true; $("run-analysis").innerHTML = "Investigating… <span>◌</span>";
+  $("run-analysis").disabled = true; $("run-analysis").innerHTML = "Investigating…";
   $("execution-badge").className = "execution-badge running"; $("execution-badge").innerHTML = "<i></i> AGENTS WORKING";
   setAllAgents("queued");
   ["Demand Forecasting Agent","Inventory Risk Agent","Supplier Intelligence Agent","Supply Risk Agent"].forEach(name=>setAgentState(name,"running"));
@@ -163,12 +163,32 @@ async function runAnalysis() {
     setAllAgents("not completed");
     showError(error.message);
   } finally {
-    $("run-analysis").disabled = false; $("run-analysis").innerHTML = "Run agent analysis <span>↗</span>";
+    $("run-analysis").disabled = false; $("run-analysis").innerHTML = "Run analysis";
   }
 }
 
 $("load-sample").addEventListener("click", loadSample);
-$("clear-data").addEventListener("click", ()=>{datasetFields.forEach(name=>setDataset(name,[]));lastResult=null;$("sample-note").textContent="Paste JSON or import CSV datasets";});
+$("clear-data").addEventListener("click", ()=>{
+  datasetFields.forEach(name=>setDataset(name,[]));
+  lastResult=null;
+  $("sample-note").textContent="Use the sample data to try SupplyPilot, or upload your own CSV files.";
+  $("agent-insights").classList.add("hidden");
+  $("risk-badge").classList.add("hidden");
+  $("execution-badge").className="execution-badge";
+  $("execution-badge").innerHTML="<i></i> Waiting for data";
+  setAllAgents("idle");
+  $("decision-summary").textContent="Your procurement recommendation will appear here after analysis.";
+  $("priority-actions").innerHTML="";
+  $("audit-status").className="audit-status";
+  $("audit-status").innerHTML=`<span class="audit-icon">—</span><strong>Not started</strong>`;
+  $("audit-copy").textContent="The auditor will review the proposed plan after the specialist agents finish.";
+  $("audit-checks").innerHTML="";
+  $("orders-body").innerHTML=`<tr><td colspan="5" class="table-empty">Run an analysis to generate procurement options.</td></tr>`;
+  $("order-count").textContent="No analysis yet";
+  $("table-bottom").textContent="Planning estimates only. No purchase orders are placed by SupplyPilot.";
+  $("shortage-panel").classList.add("hidden");
+  clearError();
+});
 $("run-analysis").addEventListener("click", runAnalysis);
 $("dismiss-error").addEventListener("click", clearError);
 for (const name of datasetFields) {
@@ -180,7 +200,9 @@ for (const name of datasetFields) {
   });
   $(name+"-input").addEventListener("input",()=>{
     const text=$(name+"-input").value.trim(); const count=text?text.split(/\r?\n/).length-1:0;
-    $(name+"-count").textContent=count>0?`${count} lines · parse on run`:"No data loaded";
+    const countLabel = $(name+"-count");
+    countLabel.textContent=count>0?`${count} lines entered`:"Required";
+    countLabel.classList.toggle("loaded",count>0);
   });
 }
 loadHealth();
