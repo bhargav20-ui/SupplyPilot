@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
-import io
+import logging
 import os
 import threading
 import time
+import uuid
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +26,25 @@ load_dotenv(BASE_DIR / ".env")
 app = FastAPI(
     title="SupplyPilot",
     description="Multi-agent supply-chain decision intelligence",
-    version="1.1.0",
+    version="1.2.0",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+logger = logging.getLogger("supplypilot")
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request: Request, exc: Exception):
+    """Keep application-level failures JSON-shaped for API callers."""
+    error_id = uuid.uuid4().hex[:12]
+    logger.exception("Unhandled request error id=%s path=%s", error_id, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "SupplyPilot encountered an unexpected server error. Please retry. If it continues, share this error ID with the administrator.",
+            "error_id": error_id,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 class InvestigationRequest(BaseModel):
@@ -36,12 +54,25 @@ class InvestigationRequest(BaseModel):
     suppliers: list[dict[str, Any]]
 
 
-# Public guest access: limit expensive model runs without asking visitors to share
-# an administrator secret. This limiter is intentionally process-local; see README
-# for the limitation and the recommended persistent limiter for a larger deployment.
+AGENT_NAMES = [
+    "Demand Forecasting Agent",
+    "Inventory Risk Agent",
+    "Supplier Intelligence Agent",
+    "Supply Risk Agent",
+    "Procurement Planning Agent",
+    "Decision Auditor Agent",
+]
+
+# Public guest access and process-local job/rate-limit state. This is appropriate
+# for the single-instance demo; use Redis/Render Key Value for multi-instance scale.
 _RATE_LOCK = threading.Lock()
 _RUN_HISTORY: dict[str, deque[float]] = defaultdict(deque)
 _ACTIVE_RUNS = 0
+_TASK_LOCK = threading.Lock()
+_TASKS: dict[str, dict[str, Any]] = {}
+_TASK_TTL_SECONDS = 2 * 60 * 60
+_TASK_CACHE_LIMIT = 150
+_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="supplypilot-agent")
 
 
 def _public_limits() -> tuple[int, int, int]:
@@ -53,8 +84,6 @@ def _public_limits() -> tuple[int, int, int]:
 
 
 def _client_key(request: Request) -> str:
-    # Render's edge proxy forwards the visitor IP in X-Forwarded-For. The first
-    # address identifies the original visitor; request.client is a local fallback.
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded.strip():
         return forwarded.split(",", 1)[0].strip() or "unknown"
@@ -93,6 +122,95 @@ def _release_public_run() -> None:
         _ACTIVE_RUNS = max(0, _ACTIVE_RUNS - 1)
 
 
+def _prune_tasks() -> None:
+    now = time.time()
+    with _TASK_LOCK:
+        expired = [
+            task_id for task_id, task in _TASKS.items()
+            if task["status"] in {"completed", "failed"} and now - task["updated_at"] > _TASK_TTL_SECONDS
+        ]
+        for task_id in expired:
+            _TASKS.pop(task_id, None)
+        if len(_TASKS) > _TASK_CACHE_LIMIT:
+            completed = sorted(
+                ((task_id, task["updated_at"]) for task_id, task in _TASKS.items() if task["status"] in {"completed", "failed"}),
+                key=lambda item: item[1],
+            )
+            for task_id, _ in completed[: max(0, len(_TASKS) - _TASK_CACHE_LIMIT)]:
+                _TASKS.pop(task_id, None)
+
+
+def _task_snapshot(task_id: str) -> dict[str, Any]:
+    _prune_tasks()
+    with _TASK_LOCK:
+        task = _TASKS.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="This investigation task was not found or has expired. Start a new analysis.")
+        # Return a shallow copy to avoid serializing a dictionary while a worker mutates it.
+        snapshot = dict(task)
+        snapshot["agents"] = dict(task["agents"])
+        return snapshot
+
+
+def _set_agent_progress(task_id: str, agent_name: str, status: str) -> None:
+    with _TASK_LOCK:
+        task = _TASKS.get(task_id)
+        if task is not None and agent_name in task["agents"]:
+            task["agents"][agent_name] = status
+            task["updated_at"] = time.time()
+
+
+def _execute_task(task_id: str, title: str, sales: list[dict], inventory: list[dict], suppliers: list[dict]) -> None:
+    with _TASK_LOCK:
+        task = _TASKS.get(task_id)
+        if task is not None:
+            task["status"] = "running"
+            task["updated_at"] = time.time()
+
+    def progress(agent_name: str, status: str) -> None:
+        _set_agent_progress(task_id, agent_name, status)
+
+    try:
+        result = run_investigation(
+            title,
+            sales,
+            inventory,
+            suppliers,
+            progress_callback=progress,
+        )
+        with _TASK_LOCK:
+            task = _TASKS.get(task_id)
+            if task is not None:
+                task["status"] = "completed"
+                task["result"] = result
+                task["metrics"] = result.get("metrics", {})
+                task["updated_at"] = time.time()
+    except AgentRuntimeError as exc:
+        with _TASK_LOCK:
+            task = _TASKS.get(task_id)
+            if task is not None:
+                task["status"] = "failed"
+                task["error"] = str(exc)
+                task["metrics"] = exc.metrics
+                task["timeline"] = exc.timeline
+                task["updated_at"] = time.time()
+                for name, current in task["agents"].items():
+                    if current in {"queued", "running"}:
+                        task["agents"][name] = "not completed"
+    except Exception as exc:  # unexpected errors are recorded instead of killing the request path
+        with _TASK_LOCK:
+            task = _TASKS.get(task_id)
+            if task is not None:
+                task["status"] = "failed"
+                task["error"] = f"Investigation failed: {type(exc).__name__}: {exc}"
+                task["updated_at"] = time.time()
+                for name, current in task["agents"].items():
+                    if current in {"queued", "running"}:
+                        task["agents"][name] = "not completed"
+    finally:
+        _release_public_run()
+
+
 @app.get("/", include_in_schema=False)
 def home():
     return FileResponse(BASE_DIR / "static" / "index.html")
@@ -106,7 +224,6 @@ _SAMPLE_REQUIRED_COLUMNS = {
 
 
 def _sample_header(value: str) -> str:
-    """Normalize CSV column labels and ignore spreadsheet-generated index columns."""
     label = str(value or "").replace("\ufeff", "").strip().lower()
     label = "_".join(label.replace("-", " ").split())
     if label in {"index", "row_number", "unnamed:_0", "unnamed_0"}:
@@ -115,20 +232,12 @@ def _sample_header(value: str) -> str:
 
 
 def _read_sample(name: str) -> list[dict]:
-    """Read only the real header/table, tolerating spreadsheet export preambles.
-
-    Some CSV export/parsing paths prepend a sheet title and an index column. The
-    previous DictReader implementation treated the title as the header, causing
-    every required column to appear missing. Locate the actual schema row instead.
-    """
     path = BASE_DIR / "data" / "sample" / name
     required = _SAMPLE_REQUIRED_COLUMNS.get(name)
     if not required:
         raise ValueError(f"Unknown sample dataset: {name}")
-
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         raw_rows = list(csv.reader(handle))
-
     header_index = None
     normalized_header = []
     for index, candidate in enumerate(raw_rows[:20]):
@@ -137,26 +246,19 @@ def _read_sample(name: str) -> list[dict]:
             header_index = index
             normalized_header = labels
             break
-
     if header_index is None:
         raise ValueError(f"Could not locate the required header row in sample dataset {name}.")
-
     headers = normalized_header
     records: list[dict] = []
     for values in raw_rows[header_index + 1:]:
         if not values or not any(str(value).strip() for value in values):
             continue
-        # Skip repeated header rows sometimes introduced by CSV exports.
         padded = (values + [""] * len(headers))[:len(headers)]
         if all(not key.startswith("__") and str(value).strip().lower() == key for key, value in zip(headers, padded) if key):
             continue
-        row = {}
-        for key, value in zip(headers, padded):
-            if key and not key.startswith("__"):
-                row[key] = value.strip()
+        row = {key: value.strip() for key, value in zip(headers, padded) if key and not key.startswith("__")}
         if required.issubset(row.keys()):
             records.append(row)
-
     if not records:
         raise ValueError(f"Sample dataset {name} contains a header but no valid data rows.")
     return records
@@ -167,12 +269,13 @@ def health():
     limit, window_seconds, max_concurrent = _public_limits()
     return {
         "status": "ok",
+        "version": app.version,
         "ai_configured": bool(os.getenv("GEMINI_API_KEY", "").strip()),
         "model": os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
         "public_access": True,
         "rate_limit": {"runs": limit, "window_seconds": window_seconds},
         "max_concurrent_runs": max_concurrent,
-        "mode": "Public guest access · Gemini multi-agent · local analytics tools",
+        "mode": "Public guest access · asynchronous Gemini multi-agent jobs",
     }
 
 
@@ -186,24 +289,70 @@ def sample_data():
     }
 
 
-@app.post("/api/investigate")
+@app.post("/api/investigate", status_code=202)
 def investigate(payload: InvestigationRequest, request: Request):
+    """Validate and enqueue an investigation; return promptly before Gemini calls run."""
     try:
         validate_datasets(payload.sales, payload.inventory, payload.suppliers)
         _reserve_public_run(request)
+        task_id = uuid.uuid4().hex
+        now = time.time()
+        task = {
+            "task_id": task_id,
+            "status": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "agents": {name: "queued" for name in AGENT_NAMES},
+            "result": None,
+            "error": None,
+            "metrics": {"gemini_calls": 0, "tool_calls": 0},
+            "timeline": [],
+        }
+        with _TASK_LOCK:
+            _TASKS[task_id] = task
         try:
-            return run_investigation(payload.title, payload.sales, payload.inventory, payload.suppliers)
-        finally:
+            _EXECUTOR.submit(
+                _execute_task,
+                task_id,
+                payload.title,
+                payload.sales,
+                payload.inventory,
+                payload.suppliers,
+            )
+        except Exception:
+            with _TASK_LOCK:
+                _TASKS.pop(task_id, None)
             _release_public_run()
+            raise
+        return JSONResponse(
+            status_code=202,
+            content={"task_id": task_id, "status": "queued", "status_url": f"/api/investigations/{task_id}"},
+            headers={"Cache-Control": "no-store"},
+        )
     except DataValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except AgentRuntimeError as exc:
-        return JSONResponse(status_code=503, content={"detail": str(exc), "metrics": exc.metrics, "timeline": exc.timeline, "completed": False})
     except HTTPException:
         raise
     except Exception as exc:
-        # Expose a useful failure without pretending the run completed.
-        raise HTTPException(status_code=500, detail=f"Investigation failed: {type(exc).__name__}: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Could not start investigation: {type(exc).__name__}: {exc}") from exc
+
+
+@app.get("/api/investigations/{task_id}")
+def investigation_status(task_id: str):
+    snapshot = _task_snapshot(task_id)
+    payload = {
+        "task_id": snapshot["task_id"],
+        "status": snapshot["status"],
+        "agents": snapshot["agents"],
+        "updated_at": snapshot["updated_at"],
+        "metrics": snapshot["metrics"],
+    }
+    if snapshot["status"] == "completed":
+        payload["result"] = snapshot["result"]
+    elif snapshot["status"] == "failed":
+        payload["error"] = snapshot["error"] or "The investigation could not complete."
+        payload["timeline"] = snapshot.get("timeline", [])
+    return JSONResponse(content=payload, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/scenarios")
