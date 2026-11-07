@@ -14,6 +14,7 @@ It is deliberately **not** an inventory CRUD dashboard. Each specialist has a bo
 - Uses a final Gemini planning agent to synthesize the specialist findings and an independent Gemini auditor to challenge the recommendation.
 - Runs investigations as background jobs so a multi-agent workflow does not keep one browser/API request open for the full model execution. The dashboard polls job progress and reports provider/hosting failures explicitly.
 - Reports actual Gemini request counts and deterministic analytics-tool executions. A provider failure is surfaced; no mock AI findings are substituted.
+- Detects Gemini daily request-quota exhaustion, stops futile retries, and temporarily pauses new investigations for the provider's retry window.
 
 ## Multi-agent architecture
 
@@ -175,3 +176,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 The script initializes the local Git repository, commits the project, sets `origin`, and pushes `main`. It never stages `.env` because `.gitignore` excludes it.
+
+
+## Gemini API quota and public access
+
+Each successful end-to-end investigation normally makes six Gemini generation requests: four specialists, one procurement planner, and one independent auditor. A malformed-response repair retry can add a request. All visitors share the quota attached to the server-side Google Cloud project/API key; the public website does not receive a separate free quota per visitor.
+
+SupplyPilot classifies daily quota exhaustion separately from short-window rate limits. It does not retry a depleted daily quota, extracts Google's retry hint, and temporarily pauses new public investigations through a process-local circuit breaker. The `/api/health` response exposes the pause state and remaining wait. The dashboard displays the paused state to visitors.
+
+This circuit breaker is an in-process safeguard for the current single-instance demo; it is reset by a process restart and is not a replacement for a persistent shared quota service. Before advertising the app to a large audience, enable an appropriate Gemini billing tier, set a conservative budget/spending alert, monitor project usage, and implement persistent global quotas and abuse controls. A budget alert is not the same as a hard spending cap.
