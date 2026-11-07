@@ -143,3 +143,20 @@ def test_sample_reader_skips_sheet_preamble_and_export_index(tmp_path, monkeypat
     rows = main_module._read_sample("sales_history.csv")
     assert len(rows) == 2
     assert rows[0] == {"date": "2026-01-01", "sku": "A", "product": "Alpha", "units_sold": "12"}
+
+
+def test_daily_quota_circuit_breaker_blocks_new_public_jobs(monkeypatch):
+    import time
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module, "_GEMINI_QUOTA_PAUSED_UNTIL", time.time() + 120)
+    ip = "198.51.100.90"
+    clear_guest_limit(ip)
+    response = client.post(
+        "/api/investigate",
+        headers={"x-forwarded-for": ip},
+        json=sample_payload(),
+    )
+    assert response.status_code == 429
+    assert "daily request quota" in response.json()["detail"].lower()
+    assert int(response.headers["retry-after"]) > 0
