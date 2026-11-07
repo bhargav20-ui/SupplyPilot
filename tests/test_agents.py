@@ -25,7 +25,14 @@ def test_orchestration_runs_four_specialists_then_planner_and_auditor(monkeypatc
         calls.append(name)
         assert config["response_mime_type"] == "application/json"
         assert config["response_json_schema"]["type"] == "object"
+        assert config["thinking_config"]["thinking_level"] == "low"
         attempts[name] = attempts.get(name, 0) + 1
+        if name == "Inventory Risk Agent" and attempts[name] == 2:
+            assert config["max_output_tokens"] == 4096
+        else:
+            assert config["max_output_tokens"] == 2048
+        if name == "Supplier Intelligence Agent":
+            assert config["response_json_schema"]["properties"]["preferred_suppliers"]["items"]["type"] == "string"
         if name == "Inventory Risk Agent" and attempts[name] == 1:
             # Reproduce the malformed/truncated JSON returned by the live model.
             return pytypes.SimpleNamespace(text='{"summary":"Inventory risk')
@@ -52,6 +59,7 @@ def test_orchestration_runs_four_specialists_then_planner_and_auditor(monkeypatc
     fake_genai.Client = lambda api_key: fake_client
     fake_types = pytypes.ModuleType("google.genai.types")
     fake_types.GenerateContentConfig = lambda **kwargs: kwargs
+    fake_types.ThinkingConfig = lambda **kwargs: kwargs
     fake_genai.types = fake_types
     fake_google = pytypes.ModuleType("google")
     fake_google.__path__ = []
@@ -108,6 +116,7 @@ def test_daily_free_tier_quota_is_not_retried_and_returns_reset_guidance(monkeyp
     fake_genai.Client = lambda api_key: fake_client
     fake_types = pytypes.ModuleType("google.genai.types")
     fake_types.GenerateContentConfig = lambda **kwargs: kwargs
+    fake_types.ThinkingConfig = lambda **kwargs: kwargs
     fake_genai.types = fake_types
     fake_google = pytypes.ModuleType("google")
     fake_google.__path__ = []
@@ -128,3 +137,56 @@ def test_daily_free_tier_quota_is_not_retried_and_returns_reset_guidance(monkeyp
     assert error.value.quota_reset_seconds == 2650
     assert "daily request quota" in str(error.value).lower()
     assert "stopped further gemini retries" in str(error.value).lower()
+
+def test_json_parse_error_includes_model_finish_reason_without_exposing_response(monkeypatch):
+    import pytest
+    from app.agents import AgentRuntimeError, _parse_json
+
+    with pytest.raises(AgentRuntimeError) as error:
+        _parse_json('{"summary":"cut off', "Supplier Intelligence Agent", finish_reason="MAX_TOKENS")
+    message = str(error.value)
+    assert "MAX_TOKENS" in message
+    assert "response length" in message
+    assert "cut off" not in message
+
+
+def test_persistently_malformed_agent_response_stops_after_one_repair_retry(monkeypatch):
+    import pytest
+    from collections import Counter
+    from app.agents import AgentRuntimeError
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    calls = []
+
+    def always_truncated(model, contents, config):
+        name = contents.split("You are the ", 1)[1].split(" in SupplyPilot", 1)[0]
+        calls.append((name, config["max_output_tokens"]))
+        return pytypes.SimpleNamespace(text='{"summary":"unfinished')
+
+    fake_models = pytypes.SimpleNamespace(generate_content=always_truncated)
+    fake_client = pytypes.SimpleNamespace(models=fake_models)
+    fake_genai = pytypes.ModuleType("google.genai")
+    fake_genai.Client = lambda api_key: fake_client
+    fake_types = pytypes.ModuleType("google.genai.types")
+    fake_types.GenerateContentConfig = lambda **kwargs: kwargs
+    fake_types.ThinkingConfig = lambda **kwargs: kwargs
+    fake_genai.types = fake_types
+    fake_google = pytypes.ModuleType("google")
+    fake_google.__path__ = []
+    fake_google.genai = fake_genai
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    with pytest.raises(AgentRuntimeError) as error:
+        run_investigation(
+            "Test persistently truncated agent output",
+            read_sample("sales_history.csv"),
+            read_sample("inventory.csv"),
+            read_sample("suppliers.csv"),
+        )
+
+    assert len(calls) == 8  # four specialists, exactly two attempts each
+    assert set(Counter(name for name, _ in calls).values()) == {2}
+    assert sum(1 for _, tokens in calls if tokens == 4096) == 4
+    assert "failed after 2 attempt(s)" in str(error.value)
