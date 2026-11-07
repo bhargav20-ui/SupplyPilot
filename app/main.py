@@ -68,6 +68,8 @@ AGENT_NAMES = [
 _RATE_LOCK = threading.Lock()
 _RUN_HISTORY: dict[str, deque[float]] = defaultdict(deque)
 _ACTIVE_RUNS = 0
+_GEMINI_QUOTA_LOCK = threading.Lock()
+_GEMINI_QUOTA_PAUSED_UNTIL = 0.0
 _TASK_LOCK = threading.Lock()
 _TASKS: dict[str, dict[str, Any]] = {}
 _TASK_TTL_SECONDS = 2 * 60 * 60
@@ -120,6 +122,21 @@ def _release_public_run() -> None:
     global _ACTIVE_RUNS
     with _RATE_LOCK:
         _ACTIVE_RUNS = max(0, _ACTIVE_RUNS - 1)
+
+
+def _pause_for_gemini_quota(seconds: int) -> None:
+    """Open a process-wide circuit breaker after Gemini reports a hard daily quota."""
+    global _GEMINI_QUOTA_PAUSED_UNTIL
+    with _GEMINI_QUOTA_LOCK:
+        _GEMINI_QUOTA_PAUSED_UNTIL = max(
+            _GEMINI_QUOTA_PAUSED_UNTIL,
+            time.time() + max(60, seconds),
+        )
+
+
+def _gemini_quota_pause_remaining() -> int:
+    with _GEMINI_QUOTA_LOCK:
+        return max(0, int(_GEMINI_QUOTA_PAUSED_UNTIL - time.time()))
 
 
 def _prune_tasks() -> None:
@@ -186,6 +203,8 @@ def _execute_task(task_id: str, title: str, sales: list[dict], inventory: list[d
                 task["metrics"] = result.get("metrics", {})
                 task["updated_at"] = time.time()
     except AgentRuntimeError as exc:
+        if exc.quota_reset_seconds:
+            _pause_for_gemini_quota(exc.quota_reset_seconds)
         with _TASK_LOCK:
             task = _TASKS.get(task_id)
             if task is not None:
@@ -293,6 +312,17 @@ def sample_data():
 def investigate(payload: InvestigationRequest, request: Request):
     """Validate and enqueue an investigation; return promptly before Gemini calls run."""
     try:
+        quota_wait = _gemini_quota_pause_remaining()
+        if quota_wait:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Gemini's daily request quota was exhausted recently. "
+                    f"SupplyPilot has paused new investigations for about {max(1, round(quota_wait / 60))} minutes "
+                    "to avoid wasting more API requests. Check Google AI Studio Usage and Rate limits."
+                ),
+                headers={"Retry-After": str(quota_wait)},
+            )
         validate_datasets(payload.sales, payload.inventory, payload.suppliers)
         _reserve_public_run(request)
         task_id = uuid.uuid4().hex
