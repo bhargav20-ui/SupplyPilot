@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import os
 import threading
 import time
@@ -97,10 +98,68 @@ def home():
     return FileResponse(BASE_DIR / "static" / "index.html")
 
 
+_SAMPLE_REQUIRED_COLUMNS = {
+    "sales_history.csv": {"date", "sku", "product", "units_sold"},
+    "inventory.csv": {"sku", "product", "on_hand", "lead_time_days", "safety_stock"},
+    "suppliers.csv": {"supplier", "sku", "unit_cost", "lead_time_days", "on_time_rate", "quality_rate", "capacity_units", "min_order_qty"},
+}
+
+
+def _sample_header(value: str) -> str:
+    """Normalize CSV column labels and ignore spreadsheet-generated index columns."""
+    label = str(value or "").replace("\ufeff", "").strip().lower()
+    label = "_".join(label.replace("-", " ").split())
+    if label in {"index", "row_number", "unnamed:_0", "unnamed_0"}:
+        return "__index__"
+    return label
+
+
 def _read_sample(name: str) -> list[dict]:
+    """Read only the real header/table, tolerating spreadsheet export preambles.
+
+    Some CSV export/parsing paths prepend a sheet title and an index column. The
+    previous DictReader implementation treated the title as the header, causing
+    every required column to appear missing. Locate the actual schema row instead.
+    """
     path = BASE_DIR / "data" / "sample" / name
+    required = _SAMPLE_REQUIRED_COLUMNS.get(name)
+    if not required:
+        raise ValueError(f"Unknown sample dataset: {name}")
+
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        return list(csv.DictReader(handle))
+        raw_rows = list(csv.reader(handle))
+
+    header_index = None
+    normalized_header = []
+    for index, candidate in enumerate(raw_rows[:20]):
+        labels = [_sample_header(value) for value in candidate]
+        if required.issubset(set(labels)):
+            header_index = index
+            normalized_header = labels
+            break
+
+    if header_index is None:
+        raise ValueError(f"Could not locate the required header row in sample dataset {name}.")
+
+    headers = normalized_header
+    records: list[dict] = []
+    for values in raw_rows[header_index + 1:]:
+        if not values or not any(str(value).strip() for value in values):
+            continue
+        # Skip repeated header rows sometimes introduced by CSV exports.
+        padded = (values + [""] * len(headers))[:len(headers)]
+        if all(not key.startswith("__") and str(value).strip().lower() == key for key, value in zip(headers, padded) if key):
+            continue
+        row = {}
+        for key, value in zip(headers, padded):
+            if key and not key.startswith("__"):
+                row[key] = value.strip()
+        if required.issubset(row.keys()):
+            records.append(row)
+
+    if not records:
+        raise ValueError(f"Sample dataset {name} contains a header but no valid data rows.")
+    return records
 
 
 @app.get("/api/health")
