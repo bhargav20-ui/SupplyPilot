@@ -80,14 +80,17 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-Add your Gemini API key to `.env` (and optionally a local access key):
+Add your Gemini API key to `.env`:
 
 ```env
 GEMINI_API_KEY=your_real_key
 GEMINI_MODEL=gemini-3.8-flash
-# Optional: require this key before allowing investigation runs
-APP_ACCESS_KEY=
+PUBLIC_RUN_LIMIT=5
+PUBLIC_RUN_WINDOW_SECONDS=900
+PUBLIC_MAX_CONCURRENT_RUNS=2
 ```
+
+The application uses public guest access: visitors do not need a shared workspace secret. The Gemini key remains on the server and is never sent to the browser.
 
 Then start the application:
 
@@ -112,16 +115,16 @@ The tests cover the deterministic forecasting, risk scoring, supplier ranking, a
 
 1. Push this folder to a GitHub repository.
 2. In Render, choose **New → Blueprint** and select the repository containing `render.yaml`.
-3. Add both `GEMINI_API_KEY` and a strong, random `APP_ACCESS_KEY` as secret environment variables when prompted. The workspace key protects the public investigation endpoint from anonymous use of your Gemini quota.
+3. Add `GEMINI_API_KEY` as a secret environment variable. Do not add it to frontend code or commit it to GitHub.
 4. Keep `GEMINI_MODEL` set to `gemini-3.8-flash` unless your Gemini account requires another available model.
-5. Deploy. Render uses the included health check at `/api/health`.
+5. Deploy. Render uses the included health check at `/api/health`. Visitors can use guest access without entering a private key.
 
 You can also create a Render Web Service manually with:
 
 - Runtime: Python
 - Build command: `pip install -r requirements.txt`
 - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-- Environment variables: `GEMINI_API_KEY` (secret), `APP_ACCESS_KEY` (strong secret), `GEMINI_MODEL=gemini-3.8-flash`
+- Environment variables: `GEMINI_API_KEY` (secret), `GEMINI_MODEL=gemini-3.8-flash`, and optional public rate-limit settings
 
 ## Important limitations and safety
 
@@ -131,7 +134,9 @@ You can also create a Render Web Service manually with:
 - Costs are estimates based on the uploaded supplier file; the app does not model taxes, freight, rebates, duties, currency conversion, or contract terms.
 - Replenishment quantities are constrained by supplied MOQs and supplier capacities, but a human must verify current stock, purchase agreements, and delivery terms.
 - No ERP, live supplier, payment, or purchasing integration is included in this MVP.
-- Never upload credentials, personal data, or confidential commercial records without authorization and appropriate controls. Configure `APP_ACCESS_KEY` for a public deployment; without it, anyone who can reach the service may be able to trigger model usage.
+- The public guest endpoint has a best-effort in-memory rate limit (default: 5 investigations per 15 minutes per visitor IP) and a process-level concurrency cap. The limiter resets on process restart and is not shared across multiple instances. It is suitable for a controlled public demo, not a high-traffic production service.
+- Before broad commercial use, add persistent rate limiting (for example, Redis), user accounts, per-account quotas, abuse monitoring, and a budget alert for Gemini usage. IP limits can affect multiple people behind the same office, campus, or mobile network.
+- Never upload credentials, personal data, or confidential commercial records without authorization and appropriate controls.
 
 ## Environment variables
 
@@ -139,7 +144,9 @@ You can also create a Render Web Service manually with:
 |---|---:|---|---|
 | `GEMINI_API_KEY` | Yes for AI runs | — | Gemini Developer API key |
 | `GEMINI_MODEL` | No | `gemini-3.8-flash` | Gemini model identifier |
-| `APP_ACCESS_KEY` | Recommended for public deployment | — | Shared key required to start an investigation; entered in the dashboard and sent only in the request header |
+| `PUBLIC_RUN_LIMIT` | No | `5` | Maximum investigations per visitor during the rate-limit window |
+| `PUBLIC_RUN_WINDOW_SECONDS` | No | `900` | Rate-limit window in seconds |
+| `PUBLIC_MAX_CONCURRENT_RUNS` | No | `2` | Maximum simultaneous investigations per application process |
 
 ## Project structure
 
