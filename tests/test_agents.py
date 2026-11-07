@@ -52,11 +52,13 @@ def test_orchestration_runs_four_specialists_then_planner_and_auditor(monkeypatc
     monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
     monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
 
+    progress = []
     result = run_investigation(
         "Test replenishment planning workflow",
         read_sample("sales_history.csv"),
         read_sample("inventory.csv"),
         read_sample("suppliers.csv"),
+        progress_callback=lambda name, status: progress.append((name, status)),
     )
 
     assert len(calls) == 6
@@ -68,3 +70,6 @@ def test_orchestration_runs_four_specialists_then_planner_and_auditor(monkeypatc
     assert result["metrics"]["tool_calls"] == 6
     assert result["status"] == "ready_for_human_review"
     assert result["data"]["hard_constraint_issues"] == []
+    completed_names = {name for name, status in progress if status == "completed"}
+    started_names = {name for name, status in progress if status == "running"}
+    assert completed_names == started_names == set(calls)
