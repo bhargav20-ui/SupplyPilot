@@ -94,7 +94,7 @@
 
       <section class="panel" id="agent-room">
         <div class="section-head">
-          <div><h2>2. Agent progress</h2><p>Four specialist agents run one at a time to avoid request bursts. Planning and audit results appear below.</p></div>
+          <div><h2>2. Agent progress</h2><p>Four specialist agents run one at a time, followed by procurement planning and independent audit.</p></div>
           <span class="execution-badge" id="execution-badge"><i></i> Waiting for data</span>
         </div>
         <div class="agent-list">
@@ -102,6 +102,8 @@
           <div class="agent-row" data-agent="Inventory Risk Agent"><span class="agent-number">02</span><strong>Inventory risk</strong><span class="agent-state">IDLE</span></div>
           <div class="agent-row" data-agent="Supplier Intelligence Agent"><span class="agent-number">03</span><strong>Supplier intelligence</strong><span class="agent-state">IDLE</span></div>
           <div class="agent-row" data-agent="Supply Risk Agent"><span class="agent-number">04</span><strong>Supply risk</strong><span class="agent-state">IDLE</span></div>
+          <div class="agent-row dependent-agent" data-agent="Procurement Planning Agent"><span class="agent-number">05</span><strong>Procurement planning</strong><span class="agent-state">IDLE</span></div>
+          <div class="agent-row dependent-agent" data-agent="Decision Auditor Agent"><span class="agent-number">06</span><strong>Independent audit</strong><span class="agent-state">IDLE</span></div>
         </div>
         <div class="agent-insights hidden" id="agent-insights"></div>
       </section>
