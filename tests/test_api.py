@@ -39,9 +39,12 @@ def test_sample_endpoint_returns_three_datasets():
     response = client.get("/api/sample")
     assert response.status_code == 200
     body = response.json()
-    assert len(body["sales"]) >= 100
+    assert len(body["sales"]) == 168
     assert len(body["inventory"]) == 4
-    assert len(body["suppliers"]) >= 8
+    assert len(body["suppliers"]) == 11
+    assert {"date", "sku", "product", "units_sold"}.issubset(body["sales"][0])
+    assert {"sku", "product", "on_hand", "lead_time_days", "safety_stock"}.issubset(body["inventory"][0])
+    assert {"supplier", "sku", "unit_cost", "lead_time_days", "on_time_rate", "quality_rate", "capacity_units", "min_order_qty"}.issubset(body["suppliers"][0])
 
 
 def test_root_serves_public_dashboard_without_workspace_key_field():
@@ -86,3 +89,18 @@ def test_public_guest_rate_limit_rejects_excess_runs(monkeypatch):
     assert first.status_code == 200
     assert second.status_code == 429
     assert second.headers.get("retry-after")
+
+
+def test_sample_reader_skips_sheet_preamble_and_export_index(tmp_path, monkeypatch):
+    from app import main as main_module
+    (tmp_path / "data" / "sample").mkdir(parents=True)
+    sample = tmp_path / "data" / "sample" / "sales_history.csv"
+    sample.write_text(
+        "Sheet export\nDataset: Sales\nindex,date,sku,product,units_sold\n"
+        "0,2026-01-01,A,Alpha,12\n1,2026-01-02,A,Alpha,14\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main_module, "BASE_DIR", tmp_path)
+    rows = main_module._read_sample("sales_history.csv")
+    assert len(rows) == 2
+    assert rows[0] == {"date": "2026-01-01", "sku": "A", "product": "Alpha", "units_sold": "12"}
