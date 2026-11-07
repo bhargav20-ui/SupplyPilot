@@ -43,6 +43,7 @@ def test_health_endpoint_reports_public_runtime_without_exposing_secret(monkeypa
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
+    assert body["version"] == "1.2.1"
     assert body["public_access"] is True
     assert body["rate_limit"]["runs"] >= 1
     assert "legacy-private-key" not in str(body)
