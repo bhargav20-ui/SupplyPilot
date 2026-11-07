@@ -31,7 +31,8 @@
 - Visit `/api/health`; expect `status: ok` and `ai_configured: true`.
 - Open the root page and click **Load sample data**.
 - Click **Run analysis**. No workspace key is required.
+- `POST /api/investigate` should return HTTP 202 with a task ID quickly. The dashboard then polls `GET /api/investigations/{task_id}`; long Gemini workflows no longer depend on a single open HTTP request.
 - A completed investigation should report measured Gemini requests and tool executions.
 - A model outage or quota error should appear as a visible failure. Do not interpret a successful page load as proof that Gemini requests work.
 
-Never expose `GEMINI_API_KEY` to the browser or commit it to Git. The guest rate limiter is process-local and intended for a demo; use persistent quotas, user accounts and abuse monitoring before scaling to a large public audience.
+Never expose `GEMINI_API_KEY` to the browser or commit it to Git. The guest rate limiter is process-local and intended for a demo; active investigation tasks are lost on process restart/redeploy. Use a durable queue and persistent task store plus Redis-backed quotas, user accounts and abuse monitoring before scaling to a large public audience.
