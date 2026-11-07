@@ -26,7 +26,7 @@ load_dotenv(BASE_DIR / ".env")
 app = FastAPI(
     title="SupplyPilot",
     description="Multi-agent supply-chain decision intelligence",
-    version="1.2.1",
+    version="1.2.2",
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 logger = logging.getLogger("supplypilot")
@@ -81,7 +81,7 @@ def _public_limits() -> tuple[int, int, int]:
     return (
         max(1, int(os.getenv("PUBLIC_RUN_LIMIT", "5"))),
         max(60, int(os.getenv("PUBLIC_RUN_WINDOW_SECONDS", "900"))),
-        max(1, int(os.getenv("PUBLIC_MAX_CONCURRENT_RUNS", "2"))),
+        max(1, int(os.getenv("PUBLIC_MAX_CONCURRENT_RUNS", "1"))),
     )
 
 
