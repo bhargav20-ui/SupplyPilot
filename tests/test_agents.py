@@ -82,3 +82,49 @@ def test_orchestration_runs_four_specialists_then_planner_and_auditor(monkeypatc
     completed_names = {name for name, status in progress if status == "completed"}
     started_names = {name for name, status in progress if status == "running"}
     assert completed_names == started_names == set(calls)
+
+
+def test_daily_free_tier_quota_is_not_retried_and_returns_reset_guidance(monkeypatch):
+    import pytest
+    from app.agents import AgentRuntimeError, _is_daily_quota_error, _is_rate_limit_error, _retry_delay_seconds
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    calls = []
+    quota_message = (
+        "429 RESOURCE_EXHAUSTED: Generate content requests per day limit exceeded "
+        "on Free Tier. retryDelay': '2650s'"
+    )
+    assert _is_daily_quota_error(RuntimeError(quota_message))
+    assert not _is_rate_limit_error(RuntimeError(quota_message))
+    assert _retry_delay_seconds(RuntimeError(quota_message)) == 2650
+
+    def fail_quota(model, contents, config):
+        calls.append(contents.split("You are the ", 1)[1].split(" in SupplyPilot", 1)[0])
+        raise RuntimeError(quota_message)
+
+    fake_models = pytypes.SimpleNamespace(generate_content=fail_quota)
+    fake_client = pytypes.SimpleNamespace(models=fake_models)
+    fake_genai = pytypes.ModuleType("google.genai")
+    fake_genai.Client = lambda api_key: fake_client
+    fake_types = pytypes.ModuleType("google.genai.types")
+    fake_types.GenerateContentConfig = lambda **kwargs: kwargs
+    fake_genai.types = fake_types
+    fake_google = pytypes.ModuleType("google")
+    fake_google.__path__ = []
+    fake_google.genai = fake_genai
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    with pytest.raises(AgentRuntimeError) as error:
+        run_investigation(
+            "Test daily quota guard",
+            read_sample("sales_history.csv"),
+            read_sample("inventory.csv"),
+            read_sample("suppliers.csv"),
+        )
+
+    assert len(calls) <= 4  # one initial request per parallel specialist at most
+    assert error.value.quota_reset_seconds == 2650
+    assert "daily request quota" in str(error.value).lower()
+    assert "stopped further gemini retries" in str(error.value).lower()
