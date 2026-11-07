@@ -12,7 +12,7 @@
 1. Open the Render Dashboard and select **New → Blueprint**.
 2. Connect the GitHub repository containing this project.
 3. Review the service named `supplypilot`.
-4. Enter `GEMINI_API_KEY` and a strong random `APP_ACCESS_KEY` in the secret environment variable fields.
+4. Enter `GEMINI_API_KEY` in the secret environment variable field. Visitors use public guest access and do not need a shared key.
 5. Deploy the Blueprint.
 
 ## Manual service settings
@@ -22,15 +22,16 @@
 - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - Health check: `/api/health`
 - Required secret: `GEMINI_API_KEY`
-- Required for public use: strong random `APP_ACCESS_KEY` (the dashboard sends it in an `X-App-Key` header)
+- Public guest rate limit: 5 runs per visitor IP per 15 minutes by default
+- Maximum simultaneous investigations per process: 2 by default
 - Optional: `GEMINI_MODEL=gemini-3.8-flash`
 
 ## Verify the live service
 
 - Visit `/api/health`; expect `status: ok` and `ai_configured: true`.
 - Open the root page and click **Load sample data**.
-- Enter the configured workspace key in the dashboard field, then click **Run agent analysis**.
+- Click **Run analysis**. No workspace key is required.
 - A completed investigation should report measured Gemini requests and tool executions.
 - A model outage or quota error should appear as a visible failure. Do not interpret a successful page load as proof that Gemini requests work.
 
-Do not share the `GEMINI_API_KEY` or `APP_ACCESS_KEY` with anyone or commit them to Git.
+Never expose `GEMINI_API_KEY` to the browser or commit it to Git. The guest rate limiter is process-local and intended for a demo; use persistent quotas, user accounts and abuse monitoring before scaling to a large public audience.
