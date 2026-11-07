@@ -36,3 +36,21 @@
 - A model outage or quota error should appear as a visible failure. Do not interpret a successful page load as proof that Gemini requests work.
 
 Never expose `GEMINI_API_KEY` to the browser or commit it to Git. The guest rate limiter is process-local and intended for a demo; active investigation tasks are lost on process restart/redeploy. Use a durable queue and persistent task store plus Redis-backed quotas, user accounts and abuse monitoring before scaling to a large public audience.
+
+## Gemini quota and public traffic
+
+- One complete SupplyPilot investigation normally makes six Gemini generation requests: four specialists, one planner, and one auditor. A malformed output retry may add one or more requests.
+- Gemini free-tier quotas are shared across all visitors using this project's API key and apply at the Google Cloud project level. The free tier is not suitable for unlimited public traffic.
+- A daily quota error is not retried. SupplyPilot opens a process-local circuit breaker for the provider's `RetryInfo` duration and exposes the pause through `/api/health`.
+- For wider public access, link billing in Google AI Studio, set a conservative spend cap, monitor Usage, and implement persistent cross-instance quotas and abuse controls.
+
+
+## Gemini daily quota protection
+
+- One completed investigation normally consumes six Gemini generation requests; repair retries may add requests. All anonymous visitors share the same server-side Gemini project quota.
+- A daily `RESOURCE_EXHAUSTED` response is not retried. SupplyPilot reads Google's `RetryInfo`, fails the current job clearly, and pauses new jobs for the indicated interval.
+- `/api/health` exposes `gemini_quota_paused` and `gemini_quota_retry_after_seconds`; the dashboard shows the temporary pause.
+- The current quota circuit breaker is in memory and applies to this app process only. A service restart clears it; it is not persistent across instances.
+- For public traffic beyond a small demo, enable an appropriate Gemini paid tier, configure a conservative budget/spending alert, inspect Usage and Rate limits, and move rate-limit/quota state to a persistent shared store.
+
+After deploying, inspect `/api/health` and confirm `ai_configured: true`. If the daily quota has already been exhausted, wait for Google to restore quota or update the project's billing/tier; repeatedly clicking Run will not fix it.
