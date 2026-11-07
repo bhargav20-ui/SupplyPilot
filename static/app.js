@@ -113,13 +113,11 @@ function escapeHTML(value) { return String(value ?? "").replace(/[&<>"']/g, ch =
 async function loadHealth() {
   try {
     const response = await fetch("/api/health"); const health = await response.json();
-    $("runtime-label").textContent = health.ai_configured ? "AI ready" : "Gemini API key required";
+    $("runtime-label").textContent = health.ai_configured ? "AI ready · Public access" : "Gemini API key required";
     $("model-label").textContent = health.model;
-    $("workspace-key-wrap").hidden = !health.access_key_required;
   } catch {
     $("runtime-label").textContent = "Runtime unavailable";
     $("model-label").textContent = "Check connection";
-    $("workspace-key-wrap").hidden = true;
   }
 }
 async function loadSample() {
@@ -149,8 +147,6 @@ async function runAnalysis() {
   $("audit-copy").textContent = "No approval decision is available until the independent audit completes.";
   try {
     const headers = {"Content-Type":"application/json"};
-    const workspaceKey = $("workspace-key").value.trim();
-    if (workspaceKey) headers["X-App-Key"] = workspaceKey;
     const response = await fetch("/api/investigate", {method:"POST",headers,body:JSON.stringify(payload)});
     const result = await response.json();
     if (!response.ok) {
