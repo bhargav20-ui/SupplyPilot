@@ -33,9 +33,9 @@ class AgentRuntimeError(RuntimeError):
 
 
 PROMPT_OUTPUT = (
-    "Return only the JSON object required by the response schema. Keep every text field concise. "
-    "Use no more than 3 items in each list and no more than 4 preferred suppliers or 5 audit checks. "
-    "Do not invent facts, values, suppliers, SKUs, dates, or data sources. Distinguish measured facts from inferences."
+    "Return only the JSON object required by the response schema. Keep the whole response brief. "
+    "Use at most 2 short items in each list. Do not invent facts, values, suppliers, SKUs, dates, or sources. "
+    "Distinguish measured facts from inferences."
 )
 
 
@@ -62,7 +62,7 @@ def _response_schema(shape: dict) -> dict:
                 item = object_schema(example[0])
             else:
                 item = {"type": "string"}
-            return {"type": "array", "items": item, "maxItems": 4}
+            return {"type": "array", "items": item, "maxItems": 3}
         if isinstance(example, dict):
             return object_schema(example)
         return {"type": "string"}
@@ -121,16 +121,33 @@ def _friendly_quota_error(model: str, error: Exception, retry_seconds: int) -> s
     )
 
 
-def _parse_json(text: str, agent_name: str) -> dict:
+def _finish_reason(response: Any) -> str | None:
+    """Return a provider finish reason when the SDK exposes one."""
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+        if reason is None:
+            return None
+        return getattr(reason, "name", str(reason)).split(".")[-1]
+    except Exception:
+        return None
+
+
+def _parse_json(text: str, agent_name: str, finish_reason: str | None = None) -> dict:
     if not text:
-        raise AgentRuntimeError(f"{agent_name} returned an empty response.")
+        suffix = f" Finish reason: {finish_reason}." if finish_reason else ""
+        raise AgentRuntimeError(f"{agent_name} returned an empty response.{suffix}")
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise AgentRuntimeError(f"{agent_name} returned invalid JSON: {exc.msg}.")
+        suffix = f" Finish reason: {finish_reason}." if finish_reason else ""
+        raise AgentRuntimeError(
+            f"{agent_name} returned invalid JSON: {exc.msg} "
+            f"(response length {len(cleaned)} characters).{suffix}"
+        )
     if not isinstance(value, dict):
         raise AgentRuntimeError(f"{agent_name} response must be a JSON object.")
     return value
@@ -218,7 +235,8 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
         schema = _response_schema(output_shape)
         last_error = None
         agent_quota_reset_seconds = None
-        for attempt in range(3):
+        # Malformed JSON is retried once only. Provider outages also get at most one retry.
+        for attempt in range(2):
             if daily_quota_exhausted.is_set():
                 last_error = AgentRuntimeError(
                     f"{name} was not started because Gemini's daily quota was already exhausted by another agent."
@@ -238,14 +256,21 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
                         response_mime_type="application/json",
                         response_json_schema=schema,
                         temperature=0.1 if attempt == 0 else 0.0,
-                        max_output_tokens=1200,
+                        # Allow enough room for valid structured output. Low thinking
+                        # keeps the short agent response from being crowded out.
+                        thinking_config=types.ThinkingConfig(thinking_level="low"),
+                        max_output_tokens=2048 if attempt == 0 else 4096,
                     ),
                 )
                 parsed = getattr(response, "parsed", None)
                 if isinstance(parsed, dict):
                     value = parsed
                 else:
-                    value = _parse_json(getattr(response, "text", None) or "", name)
+                    value = _parse_json(
+                        getattr(response, "text", None) or "",
+                        name,
+                        finish_reason=_finish_reason(response),
+                    )
                 result = _normalize_output(value, output_shape)
                 timeline.append({"type": "agent", "name": name, "duration_ms": round((time.perf_counter() - started) * 1000), "status": "completed", "attempt": attempt + 1})
                 report_progress(name, "completed")
@@ -265,7 +290,7 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
                 short_rate_limit = _is_rate_limit_error(exc)
                 # Repair malformed output once. Retry 5xx failures with backoff.
                 # Retry explicit per-minute limits only once; never spin on daily quotas.
-                should_retry = (malformed_output and attempt == 0) or (provider_5xx and attempt < 2) or (short_rate_limit and attempt == 0)
+                should_retry = attempt == 0 and (malformed_output or provider_5xx or short_rate_limit)
                 if not should_retry:
                     break
                 if provider_5xx or short_rate_limit:
@@ -297,8 +322,8 @@ Analyze only your assigned responsibility. Use concrete values from the evidence
             {"inventory_exposure": exposure},
         ),
         "Supplier Intelligence Agent": (
-            "Compare supplier reliability, quality, cost, lead time, MOQ, and capacity. Explain trade-offs; do not optimize inventory levels.",
-            {"summary": "string", "key_findings": ["string"], "risks": ["string"], "preferred_suppliers": [{"sku": "string", "supplier": "string", "reason": "string"}], "caveats": ["string"]},
+            "Compare supplier reliability, quality, cost, lead time, MOQ, and capacity. Return at most 2 concise preferred options as strings in the form 'SKU — supplier — reason'. Explain trade-offs; do not optimize inventory levels.",
+            {"summary": "string", "key_findings": ["string"], "risks": ["string"], "preferred_suppliers": ["string"], "caveats": ["string"]},
             {"supplier_rankings": supplier_rankings},
         ),
         "Supply Risk Agent": (
