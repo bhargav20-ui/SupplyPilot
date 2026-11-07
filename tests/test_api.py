@@ -31,7 +31,7 @@ def test_root_serves_dashboard():
     response = client.get("/")
     assert response.status_code == 200
     assert "SupplyPilot" in response.text
-    assert "Run agent analysis" in response.text
+    assert "Run analysis" in response.text
 
 
 def test_investigation_without_gemini_key_fails_visibly_without_fake_results(monkeypatch):
