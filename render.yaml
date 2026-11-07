@@ -11,7 +11,11 @@ services:
         value: 3.13.5
       - key: GEMINI_API_KEY
         sync: false
-      - key: APP_ACCESS_KEY
-        sync: false
       - key: GEMINI_MODEL
         value: gemini-3.8-flash
+      - key: PUBLIC_RUN_LIMIT
+        value: "5"
+      - key: PUBLIC_RUN_WINDOW_SECONDS
+        value: "900"
+      - key: PUBLIC_MAX_CONCURRENT_RUNS
+        value: "2"
