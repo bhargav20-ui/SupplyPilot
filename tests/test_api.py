@@ -1,5 +1,7 @@
 from pathlib import Path
 import sys
+import time
+import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -21,6 +23,18 @@ def sample_payload():
 def clear_guest_limit(ip):
     with _RATE_LOCK:
         _RUN_HISTORY.pop(ip, None)
+
+
+def wait_for_task(task_id, timeout=3):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        response = client.get(f"/api/investigations/{task_id}")
+        assert response.status_code == 200
+        body = response.json()
+        if body["status"] in {"completed", "failed"}:
+            return body
+        time.sleep(0.01)
+    raise AssertionError("Background investigation did not finish within the test timeout.")
 
 
 def test_health_endpoint_reports_public_runtime_without_exposing_secret(monkeypatch):
@@ -55,16 +69,17 @@ def test_root_serves_public_dashboard_without_workspace_key_field():
     assert "workspace-key" not in response.text
 
 
-def test_investigation_without_gemini_key_fails_visibly_without_fake_results(monkeypatch):
+def test_investigation_returns_task_id_and_missing_key_fails_as_json(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     ip = "198.51.100.10"
     clear_guest_limit(ip)
-    response = client.post("/api/investigate", headers={"x-forwarded-for": ip}, json=sample_payload())
-    assert response.status_code == 503
-    body = response.json()
-    assert body["completed"] is False
-    assert "GEMINI_API_KEY is not configured" in body["detail"]
-    assert body["metrics"] == {"gemini_calls": 0, "tool_calls": 0}
+    started = client.post("/api/investigate", headers={"x-forwarded-for": ip}, json=sample_payload())
+    assert started.status_code == 202
+    task_id = started.json()["task_id"]
+    result = wait_for_task(task_id)
+    assert result["status"] == "failed"
+    assert "GEMINI_API_KEY is not configured" in result["error"]
+    assert result["metrics"] == {"gemini_calls": 0, "tool_calls": 0}
 
 
 def test_public_guest_can_run_without_shared_access_key(monkeypatch):
@@ -72,10 +87,20 @@ def test_public_guest_can_run_without_shared_access_key(monkeypatch):
     monkeypatch.setenv("PUBLIC_RUN_LIMIT", "5")
     ip = "198.51.100.11"
     clear_guest_limit(ip)
-    monkeypatch.setattr("app.main.run_investigation", lambda *args: {"completed": True, "status": "test"})
-    response = client.post("/api/investigate", headers={"x-forwarded-for": ip}, json=sample_payload())
-    assert response.status_code == 200
-    assert response.json()["completed"] is True
+
+    def fake_run(*args, progress_callback=None):
+        if progress_callback:
+            progress_callback("Demand Forecasting Agent", "running")
+            progress_callback("Demand Forecasting Agent", "completed")
+        return {"completed": True, "status": "test", "metrics": {"gemini_calls": 6, "tool_calls": 6}}
+
+    monkeypatch.setattr("app.main.run_investigation", fake_run)
+    started = client.post("/api/investigate", headers={"x-forwarded-for": ip}, json=sample_payload())
+    assert started.status_code == 202
+    result = wait_for_task(started.json()["task_id"])
+    assert result["status"] == "completed"
+    assert result["result"]["completed"] is True
+    assert result["agents"]["Demand Forecasting Agent"] == "completed"
 
 
 def test_public_guest_rate_limit_rejects_excess_runs(monkeypatch):
@@ -83,12 +108,26 @@ def test_public_guest_rate_limit_rejects_excess_runs(monkeypatch):
     monkeypatch.setenv("PUBLIC_RUN_WINDOW_SECONDS", "900")
     ip = "198.51.100.12"
     clear_guest_limit(ip)
-    monkeypatch.setattr("app.main.run_investigation", lambda *args: {"completed": True})
+    gate = threading.Event()
+
+    def slow_run(*args, progress_callback=None):
+        gate.wait(0.25)
+        return {"completed": True, "metrics": {"gemini_calls": 6, "tool_calls": 6}}
+
+    monkeypatch.setattr("app.main.run_investigation", slow_run)
     first = client.post("/api/investigate", headers={"x-forwarded-for": ip}, json=sample_payload())
     second = client.post("/api/investigate", headers={"x-forwarded-for": ip}, json=sample_payload())
-    assert first.status_code == 200
+    gate.set()
+    assert first.status_code == 202
     assert second.status_code == 429
     assert second.headers.get("retry-after")
+    wait_for_task(first.json()["task_id"])
+
+
+def test_unknown_task_returns_json_404():
+    response = client.get("/api/investigations/does-not-exist")
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
 
 
 def test_sample_reader_skips_sheet_preamble_and_export_index(tmp_path, monkeypatch):
