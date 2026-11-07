@@ -172,3 +172,20 @@ def test_health_reports_gemini_quota_circuit_breaker_state(monkeypatch):
     assert response.status_code == 200
     assert response.json()["gemini_quota_paused"] is True
     assert response.json()["gemini_quota_retry_after_seconds"] > 0
+
+
+def test_public_default_allows_only_one_active_investigation(monkeypatch):
+    from app import main as main_module
+
+    monkeypatch.delenv("PUBLIC_MAX_CONCURRENT_RUNS", raising=False)
+    assert main_module._public_limits()[2] == 1
+
+
+def test_health_exposes_single_active_run_limit(monkeypatch):
+    from app import main as main_module
+
+    monkeypatch.setenv("PUBLIC_MAX_CONCURRENT_RUNS", "1")
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["max_concurrent_runs"] == 1
+    assert response.json()["version"] == "1.2.2"
