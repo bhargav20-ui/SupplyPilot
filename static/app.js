@@ -2,6 +2,47 @@ const $ = (id) => document.getElementById(id);
 const datasetFields = ["sales", "inventory", "suppliers"];
 let lastResult = null;
 
+function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+async function requestJson(url, options = {}) {
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    throw new Error("Could not reach SupplyPilot. Check your connection and try again.");
+  }
+
+  const raw = await response.text();
+  let data;
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    const status = response.status ? `HTTP ${response.status}` : "unknown HTTP status";
+    if (response.status === 502 || response.status === 503 || response.status === 504) {
+      throw new Error(`SupplyPilot's hosting service returned ${status}. The service may be starting, restarting or temporarily unavailable. Wait a moment and retry. If it keeps happening, check the Render service logs.`);
+    }
+    throw new Error(`SupplyPilot returned a webpage instead of API data (${status}). This usually indicates a hosting or deployment problem. Please retry; if it persists, check Render logs.`);
+  }
+
+  if (!response.ok) {
+    const retry = response.headers.get("Retry-After");
+    let message = data.detail || data.error || `Request failed (${response.status}).`;
+    if (response.status === 429 && retry) message += ` You can retry in about ${retry} seconds.`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+function updateTaskProgress(task) {
+  const agents = task.agents || {};
+  for (const [name, status] of Object.entries(agents)) setAgentState(name, status);
+  const done = Object.values(agents).filter(status => status === "completed").length;
+  const running = Object.values(agents).filter(status => status === "running").length;
+  const state = task.status === "queued" ? "QUEUED" : task.status === "running" ? `AGENTS ${done}/6 COMPLETE${running ? ` · ${running} RUNNING` : ""}` : task.status.toUpperCase();
+  $("execution-badge").className = `execution-badge ${task.status === "running" ? "running" : ""}`;
+  $("execution-badge").innerHTML = `<i></i> ${escapeHTML(state)}`;
+}
+
 function parseCSV(text) {
   const rows = []; let row = [], cell = "", quoted = false;
   for (let i = 0; i < text.length; i++) {
@@ -112,7 +153,7 @@ function escapeHTML(value) { return String(value ?? "").replace(/[&<>"']/g, ch =
 
 async function loadHealth() {
   try {
-    const response = await fetch("/api/health"); const health = await response.json();
+    const health = await requestJson("/api/health");
     $("runtime-label").textContent = health.ai_configured ? "AI ready · Public access" : "Gemini API key required";
     $("model-label").textContent = health.model;
   } catch {
@@ -120,14 +161,19 @@ async function loadHealth() {
     $("model-label").textContent = "Check connection";
   }
 }
+
 async function loadSample() {
   clearError();
   try {
-    const response = await fetch("/api/sample"); if (!response.ok) throw new Error("Could not load sample datasets.");
-    const data = await response.json(); datasetFields.forEach(name => setDataset(name, data[name]));
+    const data = await requestJson("/api/sample");
+    for (const name of datasetFields) {
+      if (!Array.isArray(data[name]) || data[name].length === 0) throw new Error(`Sample ${name} data is missing or empty. Please contact the administrator.`);
+      setDataset(name, data[name]);
+    }
     $("sample-note").textContent = data.label + " · sample only";
   } catch (error) { showError(error.message); }
 }
+
 async function runAnalysis() {
   clearError();
   let payload;
@@ -138,28 +184,64 @@ async function runAnalysis() {
     };
     if (payload.title.length < 5) throw new Error("Please enter an investigation brief of at least five characters.");
   } catch (error) { showError(error.message); return; }
-  $("run-analysis").disabled = true; $("run-analysis").innerHTML = "Investigating…";
-  $("execution-badge").className = "execution-badge running"; $("execution-badge").innerHTML = "<i></i> AGENTS WORKING";
+
+  $("run-analysis").disabled = true;
+  $("run-analysis").textContent = "Starting analysis…";
+  $("execution-badge").className = "execution-badge running";
+  $("execution-badge").innerHTML = "<i></i> QUEUING INVESTIGATION";
   setAllAgents("queued");
-  ["Demand Forecasting Agent","Inventory Risk Agent","Supplier Intelligence Agent","Supply Risk Agent"].forEach(name=>setAgentState(name,"running"));
-  $("decision-summary").textContent = "Specialists are analyzing your evidence. The planner will wait for their findings.";
+  $("decision-summary").textContent = "Your investigation has been queued. Specialists will begin shortly.";
   $("audit-status").innerHTML = `<span class="audit-icon">◌</span><strong>Waiting for specialist findings</strong>`;
-  $("audit-copy").textContent = "No approval decision is available until the independent audit completes.";
+  $("audit-copy").textContent = "The independent auditor will review the plan after the specialists and planner finish.";
+
   try {
-    const headers = {"Content-Type":"application/json"};
-    const response = await fetch("/api/investigate", {method:"POST",headers,body:JSON.stringify(payload)});
-    const result = await response.json();
-    if (!response.ok) {
-      const partial = result.metrics ? ` Partial execution: ${result.metrics.gemini_calls} Gemini request(s), ${result.metrics.tool_calls} analytics tool(s). No completed investigation was published.` : "";
-      throw new Error((result.detail || "The investigation failed.") + partial);
+    const started = await requestJson("/api/investigate", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    });
+    if (!started.task_id) throw new Error("The server did not return an investigation task ID. Please retry. If this repeats, check the Render logs.");
+
+    let transientPollFailures = 0;
+    while (true) {
+      let task;
+      try {
+        task = await requestJson(`/api/investigations/${encodeURIComponent(started.task_id)}`);
+        transientPollFailures = 0;
+      } catch (error) {
+        transientPollFailures += 1;
+        if (transientPollFailures >= 5) throw error;
+        $("execution-badge").innerHTML = `<i></i> RECONNECTING (${transientPollFailures}/5)`;
+        await wait(1800);
+        continue;
+      }
+
+      updateTaskProgress(task);
+      if (task.status === "completed") {
+        if (!task.result || !task.result.data || !task.result.planner || !task.result.auditor) {
+          throw new Error("The server marked this task complete but returned an incomplete result. No procurement recommendation was displayed. Please retry and report this run ID: " + started.task_id);
+        }
+        renderResult(task.result);
+        break;
+      }
+      if (task.status === "failed") {
+        $("execution-badge").className = "execution-badge";
+        $("execution-badge").innerHTML = "<i></i> RUN FAILED";
+        const counts = task.metrics || {};
+        const partial = ` Partial execution: ${counts.gemini_calls || 0} Gemini request(s), ${counts.tool_calls || 0} analytics tool(s).`;
+        showError((task.error || "The investigation could not complete.") + partial + ` Run ID: ${started.task_id}`);
+        break;
+      }
+      await wait(1500);
     }
-    renderResult(result);
   } catch (error) {
-    $("execution-badge").className = "execution-badge"; $("execution-badge").innerHTML = "<i></i> RUN FAILED";
+    $("execution-badge").className = "execution-badge";
+    $("execution-badge").innerHTML = "<i></i> RUN FAILED";
     setAllAgents("not completed");
     showError(error.message);
   } finally {
-    $("run-analysis").disabled = false; $("run-analysis").innerHTML = "Run analysis";
+    $("run-analysis").disabled = false;
+    $("run-analysis").textContent = "Run analysis";
   }
 }
 
