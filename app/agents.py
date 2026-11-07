@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import Any, Callable
 
 from .core import (
     assess_supply_risk,
@@ -68,7 +68,13 @@ def _normalize_output(value: dict, shape: dict) -> dict:
     return normalized
 
 
-def run_investigation(title: str, sales: list[dict], inventory: list[dict], suppliers: list[dict]) -> dict:
+def run_investigation(
+    title: str,
+    sales: list[dict],
+    inventory: list[dict],
+    suppliers: list[dict],
+    progress_callback: Callable[[str, str], None] | None = None,
+) -> dict:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise AgentRuntimeError("GEMINI_API_KEY is not configured. Add it to the environment and restart the app; no simulated AI findings were generated.")
@@ -83,6 +89,15 @@ def run_investigation(title: str, sales: list[dict], inventory: list[dict], supp
     lock = threading.Lock()
     timeline: list[dict] = []
 
+    def report_progress(name: str, status: str) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(name, status)
+        except Exception:
+            # Progress reporting must never fail an otherwise valid investigation.
+            pass
+
     def metrics_snapshot():
         with lock:
             return dict(counters)
@@ -96,6 +111,7 @@ def run_investigation(title: str, sales: list[dict], inventory: list[dict], supp
         return result
 
     def ask_agent(name: str, role: str, evidence: dict, output_shape: dict) -> dict:
+        report_progress(name, "running")
         prompt = f"""You are the {name} in SupplyPilot, a multi-agent supply-chain decision-support system.
 ROLE: {role}
 INCIDENT / BUSINESS QUESTION: {title}
@@ -125,6 +141,7 @@ The example values describe the required data types; do not return the placehold
                 )
                 result = _normalize_output(_parse_json(response.text or "", name), output_shape)
                 timeline.append({"type": "agent", "name": name, "duration_ms": round((time.perf_counter() - started) * 1000), "status": "completed", "attempt": attempt + 1})
+                report_progress(name, "completed")
                 return result
             except Exception as exc:  # preserve the provider error after transient retries
                 last_error = exc
@@ -134,6 +151,7 @@ The example values describe the required data types; do not return the placehold
                     break
                 time.sleep(1.25 * (attempt + 1))
         timeline.append({"type": "agent", "name": name, "duration_ms": 0, "status": "failed"})
+        report_progress(name, "failed")
         raise AgentRuntimeError(f"{name} failed after {attempt + 1} attempt(s): {last_error}", metrics_snapshot(), list(timeline))
 
     # Four independent specialists each call their own analytical tool, then reason over its output.
