@@ -90,6 +90,7 @@ function setAgentState(name, state) {
   if (state === "running") card.classList.add("active");
   if (state === "completed") card.classList.add("completed");
   if (state === "failed") card.classList.add("failed");
+  if (state === "skipped") card.classList.add("skipped");
   const label = card.querySelector(".agent-state");
   if (label) label.textContent = state.toUpperCase();
 }
@@ -160,7 +161,7 @@ async function loadHealth() {
       $("model-label").textContent = `${health.model} · try again in about ${minutes} min`;
     } else {
       $("runtime-label").textContent = health.ai_configured ? "AI ready · Public access" : "Gemini API key required";
-      $("model-label").textContent = `${health.model} · v${health.version || "unknown"}`;
+      $("model-label").textContent = `${health.model} · v${health.version || "unknown"} · ${health.max_concurrent_runs || 1} active run`;
     }
   } catch {
     $("runtime-label").textContent = "Runtime unavailable";
